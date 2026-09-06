@@ -24,7 +24,7 @@ export async function sessionCommand() {
       const date = new Date(s.time?.created || Date.now()).toLocaleDateString();
       const tokens = (s.tokens?.input || 0) + (s.tokens?.output || 0);
       console.log(`${indent}${chalk.cyan(s.id.slice(0, 16))}  ${chalk.bold.white(s.title || "Untitled")}`);
-      console.log(`${indent}  ${chalk.dim(date)} · ${chalk.dim(`${tokens} tokens`)} · ${chalk.dim(s.directory)}`);
+      console.log(`${indent}  ${chalk.dim(date)} Â· ${chalk.dim(`${tokens} tokens`)} Â· ${chalk.dim(s.directory)}`);
       console.log("");
     }
   } catch (err: any) {

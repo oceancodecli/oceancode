@@ -149,9 +149,19 @@ export async function interactiveChatCommand(options?: { model?: string }) {
     currentScrollBottom = 0;
   };
 
+  const onSignal = () => {
+    cleanup();
+    process.exit(0);
+  };
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
+
   const cleanup = () => {
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
     if (activityTimeoutTimer) clearTimeout(activityTimeoutTimer);
     if (process.stdout.isTTY) {
+      process.stdout.off("resize", onResize);
       resetScrollRegion();
       const rows = process.stdout.rows || 24;
       if (lastBarStartRow > 0) {
@@ -166,6 +176,18 @@ export async function interactiveChatCommand(options?: { model?: string }) {
     }
   };
 
+  const onResize = () => {
+    if (!process.stdout.isTTY) return;
+    const lines = buildBarLines();
+    const { scrollBottom } = getBarMetrics(lines.length);
+    applyScrollRegion(scrollBottom);
+    lastBarStartRow = 0;
+    paintBar();
+  };
+  if (process.stdout.isTTY) {
+    process.stdout.on("resize", onResize);
+  }
+
   const resetActivityTimeout = () => {
     if (activityTimeoutTimer) clearTimeout(activityTimeoutTimer);
     activityTimeoutTimer = setTimeout(() => {
@@ -173,9 +195,9 @@ export async function interactiveChatCommand(options?: { model?: string }) {
         isProcessing = false;
         renderer.finish(currentAgent === "build" ? "Build" : "Plan");
         const friendlyName = getFriendlyModelName(currentBackendModel);
-        process.stdout.write(
+        printToContent(
           chalk.yellow(
-            `\n⚠️ Operation timed out waiting for ${friendlyName}. You can retry or switch models with /models.\n`
+            `⚠️ Operation timed out waiting for ${friendlyName}. You can retry or switch models with /models.`
           )
         );
         render();
@@ -475,7 +497,7 @@ export async function interactiveChatCommand(options?: { model?: string }) {
         errObj?.message ||
         errObj?.data?.message ||
         (typeof errObj === "string" ? errObj : "Model request failed or timed out.");
-      console.error(chalk.red(`\n⚠️ Model Error (${getFriendlyModelName(currentBackendModel)}): ${errMsg}\n`));
+      printToContent(chalk.red(`⚠️ Model Error (${getFriendlyModelName(currentBackendModel)}): ${errMsg}`));
       render();
     }
   }, undefined, session.directory);
@@ -1024,7 +1046,7 @@ export async function interactiveChatCommand(options?: { model?: string }) {
           if (activityTimeoutTimer) clearTimeout(activityTimeoutTimer);
           isProcessing = false;
           renderer.finish(currentAgent === "build" ? "Build" : "Plan");
-          console.error(chalk.red(`\n⚠️ Prompt Error: ${err.message}\n`));
+          printToContent(chalk.red(`⚠️ Prompt Error: ${err.message}`));
           paintBar();
         });
 

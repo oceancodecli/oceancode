@@ -280,9 +280,18 @@ async function interactiveChatCommand(options) {
     process.stdout.write(`\x1B[1;${rows}r`);
     currentScrollBottom = 0;
   };
+  const onSignal = () => {
+    cleanup();
+    process.exit(0);
+  };
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
   const cleanup = () => {
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
     if (activityTimeoutTimer) clearTimeout(activityTimeoutTimer);
     if (process.stdout.isTTY) {
+      process.stdout.off("resize", onResize);
       resetScrollRegion();
       const rows = process.stdout.rows || 24;
       if (lastBarStartRow > 0) {
@@ -298,6 +307,17 @@ async function interactiveChatCommand(options) {
       }
     }
   };
+  const onResize = () => {
+    if (!process.stdout.isTTY) return;
+    const lines = buildBarLines();
+    const { scrollBottom } = getBarMetrics(lines.length);
+    applyScrollRegion(scrollBottom);
+    lastBarStartRow = 0;
+    paintBar();
+  };
+  if (process.stdout.isTTY) {
+    process.stdout.on("resize", onResize);
+  }
   const resetActivityTimeout = () => {
     if (activityTimeoutTimer) clearTimeout(activityTimeoutTimer);
     activityTimeoutTimer = setTimeout(() => {
@@ -305,11 +325,9 @@ async function interactiveChatCommand(options) {
         isProcessing = false;
         renderer.finish(currentAgent === "build" ? "Build" : "Plan");
         const friendlyName = getFriendlyModelName(currentBackendModel);
-        process.stdout.write(
+        printToContent(
           chalk.yellow(
-            `
-\u26A0\uFE0F Operation timed out waiting for ${friendlyName}. You can retry or switch models with /models.
-`
+            `\u26A0\uFE0F Operation timed out waiting for ${friendlyName}. You can retry or switch models with /models.`
           )
         );
         render();
@@ -543,9 +561,7 @@ async function interactiveChatCommand(options) {
       renderer.finish(currentAgent === "build" ? "Build" : "Plan");
       const errObj = event.properties?.error;
       const errMsg = errObj?.message || errObj?.data?.message || (typeof errObj === "string" ? errObj : "Model request failed or timed out.");
-      console.error(chalk.red(`
-\u26A0\uFE0F Model Error (${getFriendlyModelName(currentBackendModel)}): ${errMsg}
-`));
+      printToContent(chalk.red(`\u26A0\uFE0F Model Error (${getFriendlyModelName(currentBackendModel)}): ${errMsg}`));
       render();
     }
   }, void 0, session.directory);
@@ -1020,9 +1036,7 @@ Please accomplish this goal systematically:
         if (activityTimeoutTimer) clearTimeout(activityTimeoutTimer);
         isProcessing = false;
         renderer.finish(currentAgent === "build" ? "Build" : "Plan");
-        console.error(chalk.red(`
-\u26A0\uFE0F Prompt Error: ${err.message}
-`));
+        printToContent(chalk.red(`\u26A0\uFE0F Prompt Error: ${err.message}`));
         paintBar();
       });
       return;
@@ -1120,7 +1134,7 @@ async function sessionCommand() {
       const date = new Date(s.time?.created || Date.now()).toLocaleDateString();
       const tokens = (s.tokens?.input || 0) + (s.tokens?.output || 0);
       console.log(`${indent}${chalk3.cyan(s.id.slice(0, 16))}  ${chalk3.bold.white(s.title || "Untitled")}`);
-      console.log(`${indent}  ${chalk3.dim(date)} \uFFFD ${chalk3.dim(`${tokens} tokens`)} \uFFFD ${chalk3.dim(s.directory)}`);
+      console.log(`${indent}  ${chalk3.dim(date)} \xB7 ${chalk3.dim(`${tokens} tokens`)} \xB7 ${chalk3.dim(s.directory)}`);
       console.log("");
     }
   } catch (err) {
