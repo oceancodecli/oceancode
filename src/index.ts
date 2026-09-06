@@ -25,7 +25,16 @@ program
 program
   .option("-m, --model <model>", "Model to use (default: opencode/muse-spark-1.3-contributor-free [1M Context])")
   .action(async (options) => {
-    await interactiveChatCommand({ model: options.model });
+    try {
+      await interactiveChatCommand({ model: options.model });
+    } catch (err: any) {
+      if (process.stdout.isTTY) {
+        const rows = process.stdout.rows || 24;
+        process.stdout.write(`\x1b[1;${rows}r\x1b[?25h\n`);
+      }
+      console.error(chalk.red(`\nAn error occurred: ${err?.message || err}\n`));
+      process.exit(1);
+    }
   });
 
 program

@@ -341,40 +341,45 @@ export async function interactiveChatCommand(options?: { model?: string }) {
    * Paint the bottom bar glued to the bottom rows of the terminal.
    */
   const paintBar = () => {
-    if (!process.stdout.isTTY) return;
-    const lines = buildBarLines();
-    const { rows, barStartRow, scrollBottom } = getBarMetrics(lines.length);
+    try {
+      if (!process.stdout.isTTY) return;
+      const lines = buildBarLines();
+      const { rows, barStartRow, scrollBottom } = getBarMetrics(lines.length);
 
-    applyScrollRegion(scrollBottom);
+      applyScrollRegion(scrollBottom);
 
-    // Erase any ghost rows left behind if the bar shrank (e.g. autocomplete closed or filtered)
-    if (lastBarStartRow > 0 && lastBarStartRow < barStartRow) {
-      for (let r = lastBarStartRow; r < barStartRow; r++) {
-        process.stdout.write(`\x1b[${r};1H\x1b[2K`);
+      // Erase any ghost rows left behind if the bar shrank (e.g. autocomplete closed or filtered)
+      if (lastBarStartRow > 0 && lastBarStartRow < barStartRow) {
+        for (let r = lastBarStartRow; r < barStartRow; r++) {
+          process.stdout.write(`\x1b[${r};1H\x1b[2K`);
+        }
       }
-    }
-    lastBarStartRow = barStartRow;
+      lastBarStartRow = barStartRow;
 
-    // Clear and paint bar lines at the bottom of the terminal screen
-    for (let i = 0; i < lines.length; i++) {
-      const r = barStartRow + i;
-      process.stdout.write(`\x1b[${r};1H\x1b[2K${lines[i]}`);
-    }
+      // Clear and paint bar lines at the bottom of the terminal screen
+      for (let i = 0; i < lines.length; i++) {
+        const r = barStartRow + i;
+        process.stdout.write(`\x1b[${r};1H\x1b[2K${lines[i]}`);
+      }
 
-    // Place cursor appropriately
-    if (!isProcessing && mode === "normal") {
-      process.stdout.write("\x1b[?25h");
-      const inputLineIdx = lines.findIndex((l) => l.startsWith(`${bar} ${input}█`) || l.startsWith(`${bar} `));
-      const targetRow = inputLineIdx !== -1 ? barStartRow + inputLineIdx : barStartRow;
-      const col = Math.min(process.stdout.columns || 80, 3 + input.length);
-      process.stdout.write(`\x1b[${targetRow};${col}H`);
-    } else if (!isProcessing && mode === "model_selector") {
-      process.stdout.write("\x1b[?25h");
-      const col = Math.min(process.stdout.columns || 80, 9 + modelSearch.length);
-      process.stdout.write(`\x1b[${barStartRow + 1};${col}H`);
-    } else {
-      process.stdout.write("\x1b[?25l");
-      process.stdout.write(`\x1b[${contentRow};1H`);
+      // Place cursor appropriately
+      if (!isProcessing && mode === "normal") {
+        process.stdout.write("\x1b[?25h");
+        // In normal mode, the input line is always 3 rows from the bottom of the bar (Math.max(0, lines.length - 3))
+        const inputLineIdx = Math.max(0, lines.length - 3);
+        const targetRow = barStartRow + inputLineIdx;
+        const col = Math.min(process.stdout.columns || 80, 3 + input.length);
+        process.stdout.write(`\x1b[${targetRow};${col}H`);
+      } else if (!isProcessing && mode === "model_selector") {
+        process.stdout.write("\x1b[?25h");
+        const col = Math.min(process.stdout.columns || 80, 9 + modelSearch.length);
+        process.stdout.write(`\x1b[${barStartRow + 1};${col}H`);
+      } else {
+        process.stdout.write("\x1b[?25l");
+        process.stdout.write(`\x1b[${contentRow};1H`);
+      }
+    } catch {
+      // Safe fallback: never crash terminal loop
     }
   };
 

@@ -320,7 +320,7 @@ async function interactiveChatCommand(options) {
   const buildBarLines = () => {
     const cols = process.stdout.columns || 80;
     const friendlyModel = getFriendlyModelName(currentBackendModel);
-    const bar2 = chalk.hex(OCEAN_BLUE)("\u2502");
+    const bar = chalk.hex(OCEAN_BLUE)("\u2502");
     const width = Math.min(cols - 4, 80);
     const peachBg = chalk.bgHex("#fba978").black;
     const lines = [];
@@ -392,7 +392,7 @@ async function interactiveChatCommand(options) {
         lines.push("");
         const masked = connectKeyInput.length > 8 ? connectKeyInput.slice(0, 4) + "\u2022".repeat(connectKeyInput.length - 8) + connectKeyInput.slice(-4) : "\u2022".repeat(connectKeyInput.length);
         const displayKey = connectKeyInput ? masked : chalk.dim("Paste or type API key here");
-        lines.push(`${bar2} Key: ${displayKey}\u2588`);
+        lines.push(`${bar} Key: ${displayKey}\u2588`);
         if (connectErrorMsg) {
           lines.push("");
           lines.push(chalk.hex("#ef4444").bold(`  \u26A0\uFE0F  ${connectErrorMsg}`));
@@ -433,11 +433,11 @@ async function interactiveChatCommand(options) {
       if (isProcessing) {
         const frameIdx = renderer.getThinkingFrame() % THINKING_FRAMES.length;
         const thinkingText = THINKING_FRAMES[frameIdx].trim();
-        lines.push(`${bar2} ${thinkingText}`);
+        lines.push(`${bar} ${thinkingText}`);
       } else {
-        lines.push(`${bar2} ${input}\u2588`);
+        lines.push(`${bar} ${input}\u2588`);
       }
-      lines.push(`${bar2}`);
+      lines.push(`${bar}`);
       lines.push(
         `  ${chalk.hex(OCEAN_BLUE).bold(friendlyAgent)} ${chalk.dim("\xB7")} ${chalk.white(friendlyModel)} ${chalk.dim("\xB7 OceanCode")}`
       );
@@ -445,33 +445,36 @@ async function interactiveChatCommand(options) {
     return lines;
   };
   const paintBar = () => {
-    if (!process.stdout.isTTY) return;
-    const lines = buildBarLines();
-    const { rows, barStartRow, scrollBottom } = getBarMetrics(lines.length);
-    applyScrollRegion(scrollBottom);
-    if (lastBarStartRow > 0 && lastBarStartRow < barStartRow) {
-      for (let r = lastBarStartRow; r < barStartRow; r++) {
-        process.stdout.write(`\x1B[${r};1H\x1B[2K`);
+    try {
+      if (!process.stdout.isTTY) return;
+      const lines = buildBarLines();
+      const { rows, barStartRow, scrollBottom } = getBarMetrics(lines.length);
+      applyScrollRegion(scrollBottom);
+      if (lastBarStartRow > 0 && lastBarStartRow < barStartRow) {
+        for (let r = lastBarStartRow; r < barStartRow; r++) {
+          process.stdout.write(`\x1B[${r};1H\x1B[2K`);
+        }
       }
-    }
-    lastBarStartRow = barStartRow;
-    for (let i = 0; i < lines.length; i++) {
-      const r = barStartRow + i;
-      process.stdout.write(`\x1B[${r};1H\x1B[2K${lines[i]}`);
-    }
-    if (!isProcessing && mode === "normal") {
-      process.stdout.write("\x1B[?25h");
-      const inputLineIdx = lines.findIndex((l) => l.startsWith(`${bar} ${input}\u2588`) || l.startsWith(`${bar} `));
-      const targetRow = inputLineIdx !== -1 ? barStartRow + inputLineIdx : barStartRow;
-      const col = Math.min(process.stdout.columns || 80, 3 + input.length);
-      process.stdout.write(`\x1B[${targetRow};${col}H`);
-    } else if (!isProcessing && mode === "model_selector") {
-      process.stdout.write("\x1B[?25h");
-      const col = Math.min(process.stdout.columns || 80, 9 + modelSearch.length);
-      process.stdout.write(`\x1B[${barStartRow + 1};${col}H`);
-    } else {
-      process.stdout.write("\x1B[?25l");
-      process.stdout.write(`\x1B[${contentRow};1H`);
+      lastBarStartRow = barStartRow;
+      for (let i = 0; i < lines.length; i++) {
+        const r = barStartRow + i;
+        process.stdout.write(`\x1B[${r};1H\x1B[2K${lines[i]}`);
+      }
+      if (!isProcessing && mode === "normal") {
+        process.stdout.write("\x1B[?25h");
+        const inputLineIdx = Math.max(0, lines.length - 3);
+        const targetRow = barStartRow + inputLineIdx;
+        const col = Math.min(process.stdout.columns || 80, 3 + input.length);
+        process.stdout.write(`\x1B[${targetRow};${col}H`);
+      } else if (!isProcessing && mode === "model_selector") {
+        process.stdout.write("\x1B[?25h");
+        const col = Math.min(process.stdout.columns || 80, 9 + modelSearch.length);
+        process.stdout.write(`\x1B[${barStartRow + 1};${col}H`);
+      } else {
+        process.stdout.write("\x1B[?25l");
+        process.stdout.write(`\x1B[${contentRow};1H`);
+      }
+    } catch {
     }
   };
   const render = () => paintBar();
@@ -1166,7 +1169,19 @@ program.name("oceancode").description("Ocean CLI: Next-generation AI coding assi
 ${getBigLogo()}
 `);
 program.option("-m, --model <model>", "Model to use (default: opencode/muse-spark-1.3-contributor-free [1M Context])").action(async (options) => {
-  await interactiveChatCommand({ model: options.model });
+  try {
+    await interactiveChatCommand({ model: options.model });
+  } catch (err) {
+    if (process.stdout.isTTY) {
+      const rows = process.stdout.rows || 24;
+      process.stdout.write(`\x1B[1;${rows}r\x1B[?25h
+`);
+    }
+    console.error(chalk5.red(`
+An error occurred: ${err?.message || err}
+`));
+    process.exit(1);
+  }
 });
 program.command("run [message...]").description("Run a prompt or instruction directly").option("-m, --model <model>", "Model to use (default: opencode/muse-spark-1.3-contributor-free)").option("-a, --agent <agent>", "Agent mode (default: build)").option("--auto", "Auto-approve tool permissions").action(async (messages, options, cmd) => {
   const opts = cmd?.optsWithGlobals ? cmd.optsWithGlobals() : options;
