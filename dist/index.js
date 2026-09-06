@@ -246,11 +246,35 @@ async function interactiveChatCommand(options) {
   let lastUserMsgId = null;
   let lastSubmittedPrompt = "";
   const renderer = new StreamRenderer();
+  let currentScrollBottom = 0;
+  let contentRow = 8;
+  const getBarMetrics = (linesCount) => {
+    const rows = process.stdout.rows || 24;
+    const barRows = linesCount;
+    const barStartRow = Math.max(1, rows - barRows + 1);
+    const scrollBottom = Math.max(1, barStartRow - 1);
+    return { rows, barRows, barStartRow, scrollBottom };
+  };
+  const applyScrollRegion = (scrollBottom) => {
+    if (!process.stdout.isTTY) return;
+    if (currentScrollBottom !== scrollBottom) {
+      currentScrollBottom = scrollBottom;
+      process.stdout.write(`\x1B[1;${scrollBottom}r`);
+    }
+  };
+  const resetScrollRegion = () => {
+    if (!process.stdout.isTTY) return;
+    const rows = process.stdout.rows || 24;
+    process.stdout.write(`\x1B[1;${rows}r`);
+    currentScrollBottom = 0;
+  };
   const cleanup = () => {
     if (activityTimeoutTimer) clearTimeout(activityTimeoutTimer);
     if (process.stdout.isTTY) {
-      clearLastRender();
-      process.stdout.write("\x1B[?25h");
+      resetScrollRegion();
+      const rows = process.stdout.rows || 24;
+      process.stdout.write(`\x1B[${rows};1H
+\x1B[?25h`);
       try {
         process.stdin.setRawMode(false);
       } catch {
@@ -275,19 +299,6 @@ async function interactiveChatCommand(options) {
       }
     }, 18e4);
     activityTimeoutTimer.unref();
-  };
-  let isRendered = false;
-  let lastRenderedLines = 0;
-  const clearLastRender = () => {
-    if (isRendered && process.stdout.isTTY) {
-      if (lastRenderedLines > 0) {
-        readline.moveCursor(process.stdout, 0, -lastRenderedLines);
-      }
-      readline.cursorTo(process.stdout, 0);
-      readline.clearScreenDown(process.stdout);
-      lastRenderedLines = 0;
-      isRendered = false;
-    }
   };
   const buildBarLines = () => {
     const cols = process.stdout.columns || 80;
@@ -395,19 +406,33 @@ async function interactiveChatCommand(options) {
     }
     return lines;
   };
-  const render = () => {
+  const paintBar = () => {
     if (!process.stdout.isTTY) return;
-    clearLastRender();
     const lines = buildBarLines();
+    const { rows, barStartRow, scrollBottom } = getBarMetrics(lines.length);
+    applyScrollRegion(scrollBottom);
     for (let i = 0; i < lines.length; i++) {
-      process.stdout.write(lines[i] + (i < lines.length - 1 ? "\n" : ""));
+      const r = barStartRow + i;
+      process.stdout.write(`\x1B[${r};1H\x1B[2K${lines[i]}`);
     }
-    lastRenderedLines = lines.length - 1;
-    isRendered = true;
+    if (!isProcessing && mode === "normal") {
+      process.stdout.write("\x1B[?25h");
+      const col = Math.min(process.stdout.columns || 80, 3 + input.length);
+      process.stdout.write(`\x1B[${barStartRow};${col}H`);
+    } else if (!isProcessing && mode === "model_selector") {
+      process.stdout.write("\x1B[?25h");
+      const col = Math.min(process.stdout.columns || 80, 9 + modelSearch.length);
+      process.stdout.write(`\x1B[${barStartRow + 1};${col}H`);
+    } else {
+      process.stdout.write("\x1B[?25l");
+      process.stdout.write(`\x1B[${contentRow};1H`);
+    }
   };
+  const render = () => paintBar();
   renderer.setPinBar(
-    () => render(),
-    () => clearLastRender()
+    () => paintBar(),
+    () => {
+    }
   );
   const reasoningPartIds = /* @__PURE__ */ new Set();
   const textPartIds = /* @__PURE__ */ new Set();
@@ -677,10 +702,9 @@ async function interactiveChatCommand(options) {
       input = "";
       menuIndex = 0;
       if (!submitted) {
-        render();
+        paintBar();
         return;
       }
-      clearLastRender();
       if (submitted === "/exit" || submitted === "/quit") {
         cleanup();
         unsubscribe();
@@ -692,9 +716,13 @@ async function interactiveChatCommand(options) {
       if (submitted === "/clear") {
         if (process.stdout.isTTY) {
           process.stdout.write("\x1B[2J\x1B[H");
+          const { scrollBottom } = getBarMetrics(3);
+          applyScrollRegion(scrollBottom);
+          process.stdout.write("\x1B[1;1H");
         }
         renderTopBar(getFriendlyModelName(currentBackendModel));
-        render();
+        contentRow = 8;
+        paintBar();
         return;
       }
       if (submitted === "/init") {
@@ -951,11 +979,14 @@ Session Details:
         return;
       }
       const friendlyName = getFriendlyModelName(currentBackendModel);
+      process.stdout.write(`\x1B[${contentRow};1H`);
       renderUserMessageCard(submitted, friendlyName);
+      const promptLines = submitted.split("\n").length;
+      contentRow = Math.min(currentScrollBottom || 20, contentRow + promptLines);
       isProcessing = true;
       userMsgId = null;
       lastSubmittedPrompt = submitted;
-      render();
+      paintBar();
       resetActivityTimeout();
       renderer.start(friendlyName);
       client.promptSession(session.id, submitted, {
@@ -969,7 +1000,7 @@ Session Details:
         console.error(chalk.red(`
 \u26A0\uFE0F Prompt Error: ${err.message}
 `));
-        render();
+        paintBar();
       });
       return;
     }
@@ -989,13 +1020,19 @@ Session Details:
   process.stdin.on("keypress", onKeypress);
   if (process.stdout.isTTY) {
     process.stdout.on("resize", () => {
-      render();
+      const { scrollBottom } = getBarMetrics(buildBarLines().length);
+      applyScrollRegion(scrollBottom);
+      paintBar();
     });
   }
   if (process.stdout.isTTY) {
     process.stdout.write("\x1B[2J\x1B[H");
+    const { scrollBottom } = getBarMetrics(3);
+    applyScrollRegion(scrollBottom);
+    process.stdout.write("\x1B[1;1H");
     renderTopBar(getFriendlyModelName(currentBackendModel));
-    render();
+    contentRow = 8;
+    paintBar();
   }
 }
 

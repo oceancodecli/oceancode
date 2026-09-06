@@ -109,11 +109,39 @@ export async function interactiveChatCommand(options?: { model?: string }) {
 
   const renderer = new StreamRenderer();
 
+  // ─── Glued Bottom Bar & Scroll Region ──────────────────────────────────────
+  let currentScrollBottom = 0;
+  let contentRow = 8; // Row right below the top divider
+
+  const getBarMetrics = (linesCount: number) => {
+    const rows = process.stdout.rows || 24;
+    const barRows = linesCount;
+    const barStartRow = Math.max(1, rows - barRows + 1);
+    const scrollBottom = Math.max(1, barStartRow - 1);
+    return { rows, barRows, barStartRow, scrollBottom };
+  };
+
+  const applyScrollRegion = (scrollBottom: number) => {
+    if (!process.stdout.isTTY) return;
+    if (currentScrollBottom !== scrollBottom) {
+      currentScrollBottom = scrollBottom;
+      process.stdout.write(`\x1b[1;${scrollBottom}r`);
+    }
+  };
+
+  const resetScrollRegion = () => {
+    if (!process.stdout.isTTY) return;
+    const rows = process.stdout.rows || 24;
+    process.stdout.write(`\x1b[1;${rows}r`);
+    currentScrollBottom = 0;
+  };
+
   const cleanup = () => {
     if (activityTimeoutTimer) clearTimeout(activityTimeoutTimer);
     if (process.stdout.isTTY) {
-      clearLastRender();
-      process.stdout.write("\x1b[?25h"); // restore cursor visibility
+      resetScrollRegion();
+      const rows = process.stdout.rows || 24;
+      process.stdout.write(`\x1b[${rows};1H\n\x1b[?25h`);
       try {
         process.stdin.setRawMode(false);
       } catch {}
@@ -136,22 +164,6 @@ export async function interactiveChatCommand(options?: { model?: string }) {
       }
     }, 180000); // 3 minutes of inactivity
     activityTimeoutTimer.unref();
-  };
-
-  // ─── In-place bottom bar rendering ─────────────────────────────────────────
-  let isRendered = false;
-  let lastRenderedLines = 0;
-
-  const clearLastRender = () => {
-    if (isRendered && process.stdout.isTTY) {
-      if (lastRenderedLines > 0) {
-        readline.moveCursor(process.stdout, 0, -lastRenderedLines);
-      }
-      readline.cursorTo(process.stdout, 0);
-      readline.clearScreenDown(process.stdout);
-      lastRenderedLines = 0;
-      isRendered = false;
-    }
   };
 
   /** Build the bar lines array from current UI state */
@@ -286,23 +298,42 @@ export async function interactiveChatCommand(options?: { model?: string }) {
   };
 
   /**
-   * Full in-place render: clear previously rendered lines and paint updated lines.
+   * Paint the bottom bar glued to the bottom rows of the terminal.
    */
-  const render = () => {
+  const paintBar = () => {
     if (!process.stdout.isTTY) return;
-    clearLastRender();
     const lines = buildBarLines();
+    const { rows, barStartRow, scrollBottom } = getBarMetrics(lines.length);
+
+    applyScrollRegion(scrollBottom);
+
+    // Clear and paint bar lines at the bottom of the terminal screen
     for (let i = 0; i < lines.length; i++) {
-      process.stdout.write(lines[i] + (i < lines.length - 1 ? "\n" : ""));
+      const r = barStartRow + i;
+      process.stdout.write(`\x1b[${r};1H\x1b[2K${lines[i]}`);
     }
-    lastRenderedLines = lines.length - 1;
-    isRendered = true;
+
+    // Place cursor appropriately
+    if (!isProcessing && mode === "normal") {
+      process.stdout.write("\x1b[?25h");
+      const col = Math.min(process.stdout.columns || 80, 3 + input.length);
+      process.stdout.write(`\x1b[${barStartRow};${col}H`);
+    } else if (!isProcessing && mode === "model_selector") {
+      process.stdout.write("\x1b[?25h");
+      const col = Math.min(process.stdout.columns || 80, 9 + modelSearch.length);
+      process.stdout.write(`\x1b[${barStartRow + 1};${col}H`);
+    } else {
+      process.stdout.write("\x1b[?25l");
+      process.stdout.write(`\x1b[${contentRow};1H`);
+    }
   };
 
-  // Wire the renderer: before every output it calls eraseBar, after it repins
+  const render = () => paintBar();
+
+  // Wire the renderer: repin bar updates the glued bottom bar without touching content
   renderer.setPinBar(
-    () => render(),
-    () => clearLastRender()
+    () => paintBar(),
+    () => {}
   );
 
   // SSE subscription
@@ -628,11 +659,9 @@ export async function interactiveChatCommand(options?: { model?: string }) {
       menuIndex = 0;
 
       if (!submitted) {
-        render();
+        paintBar();
         return;
       }
-
-      clearLastRender();
 
       // Handle Slash Commands
       if (submitted === "/exit" || submitted === "/quit") {
@@ -645,9 +674,13 @@ export async function interactiveChatCommand(options?: { model?: string }) {
       if (submitted === "/clear") {
         if (process.stdout.isTTY) {
           process.stdout.write("\x1b[2J\x1b[H");
+          const { scrollBottom } = getBarMetrics(3);
+          applyScrollRegion(scrollBottom);
+          process.stdout.write("\x1b[1;1H");
         }
         renderTopBar(getFriendlyModelName(currentBackendModel));
-        render();
+        contentRow = 8;
+        paintBar();
         return;
       }
 
@@ -912,13 +945,16 @@ export async function interactiveChatCommand(options?: { model?: string }) {
 
       // Regular prompt submission
       const friendlyName = getFriendlyModelName(currentBackendModel);
+      process.stdout.write(`\x1b[${contentRow};1H`);
       renderUserMessageCard(submitted, friendlyName);
+      const promptLines = submitted.split("\n").length;
+      contentRow = Math.min(currentScrollBottom || 20, contentRow + promptLines);
 
       isProcessing = true;
       userMsgId = null;
       lastSubmittedPrompt = submitted;
 
-      render();
+      paintBar();
       resetActivityTimeout();
       renderer.start(friendlyName);
 
@@ -933,7 +969,7 @@ export async function interactiveChatCommand(options?: { model?: string }) {
           isProcessing = false;
           renderer.finish(currentAgent === "build" ? "Build" : "Plan");
           console.error(chalk.red(`\n⚠️ Prompt Error: ${err.message}\n`));
-          render();
+          paintBar();
         });
 
       return;
@@ -959,14 +995,20 @@ export async function interactiveChatCommand(options?: { model?: string }) {
   // Resize handler — reapply scroll region and repaint
   if (process.stdout.isTTY) {
     process.stdout.on("resize", () => {
-      render();
+      const { scrollBottom } = getBarMetrics(buildBarLines().length);
+      applyScrollRegion(scrollBottom);
+      paintBar();
     });
   }
 
-  // ── Startup: clear screen, draw header + bar ──────────────────────────────
+  // ── Startup: clear screen, set scroll region, draw header + glued bar ─────
   if (process.stdout.isTTY) {
     process.stdout.write("\x1b[2J\x1b[H"); // clear full screen & cursor to top-left
+    const { scrollBottom } = getBarMetrics(3);
+    applyScrollRegion(scrollBottom);
+    process.stdout.write("\x1b[1;1H");
     renderTopBar(getFriendlyModelName(currentBackendModel));
-    render();
+    contentRow = 8;
+    paintBar();
   }
 }
