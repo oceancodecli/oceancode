@@ -453,7 +453,6 @@ function renderTopBar(modelName, cwd = process.cwd()) {
   const width = Math.max(60, process.stdout.columns || 80);
   const folderStr = cwd.length > 35 ? "..." + cwd.slice(-32) : cwd;
   renderBigLogo(INDENT);
-  console.log("");
   const leftText = folderStr;
   const rightText = modelName + "  /help";
   const spaces = Math.max(2, width - (leftText.length + rightText.length + 6));
@@ -461,7 +460,6 @@ function renderTopBar(modelName, cwd = process.cwd()) {
     INDENT + chalk.dim(leftText) + " ".repeat(spaces) + chalk.hex(OCEAN_BLUE).bold(modelName) + "  " + chalk.dim("/help")
   );
   console.log(INDENT + chalk.dim("\u2500".repeat(Math.max(40, width - 4))));
-  console.log("");
 }
 function renderUserMessageCard(text, _modelName) {
   const width = Math.min(80, (process.stdout.columns || 80) - 4);
@@ -472,7 +470,6 @@ function renderUserMessageCard(text, _modelName) {
     const pad = Math.max(2, width - l.length - 3);
     console.log(bar + bg(" " + l + " ".repeat(pad)));
   }
-  console.log("");
 }
 function renderFooter(modelName, durationSec, agent = "Build") {
   const icon = chalk.hex(OCEAN_BLUE)("\u25A3");
@@ -480,8 +477,7 @@ function renderFooter(modelName, durationSec, agent = "Build") {
   const dot = chalk.dim(" \xB7 ");
   const modelLabel = chalk.hex("#94a3b8")(modelName);
   const timeLabel = chalk.dim(`${durationSec.toFixed(1)}s`);
-  console.log(`
-${INDENT}${icon}  ${agentLabel}${dot}${modelLabel}${dot}${timeLabel}`);
+  console.log(`${INDENT}${icon}  ${agentLabel}${dot}${modelLabel}${dot}${timeLabel}`);
 }
 
 // src/ui/toolLabels.ts
@@ -651,8 +647,7 @@ var StreamRenderer = class {
     const action = chalk2.bold.hex("#60a5fa")(`${icon} ${label}`);
     const clean = this.formatDetail(detail);
     const info = clean ? chalk2.dim(`  ${clean}`) : "";
-    process.stdout.write(`
-${INDENT}${badge} ${action}${info}
+    process.stdout.write(`${INDENT}${badge} ${action}${info}
 `);
     this.repinBar();
     this.startThinkingAnimation();
@@ -666,7 +661,6 @@ ${INDENT}${badge} ${action}${info}
       if (this.toolsUsed.length > 0) {
         process.stdout.write(
           `${INDENT}${chalk2.green("\u2713")} ${chalk2.dim(`Used tools: ${this.toolsUsed.join(", ")}`)}
-
 `
         );
       }
@@ -684,7 +678,6 @@ ${INDENT}${badge} ${action}${info}
       if (this.toolsUsed.length > 0) {
         process.stdout.write(
           `${INDENT}${chalk2.green("\u2713")} ${chalk2.dim(`Used tools: ${this.toolsUsed.join(", ")}`)}
-
 `
         );
       }

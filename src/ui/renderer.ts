@@ -119,7 +119,7 @@ export class StreamRenderer {
     const action = chalk.bold.hex("#60a5fa")(`${icon} ${label}`);
     const clean = this.formatDetail(detail);
     const info = clean ? chalk.dim(`  ${clean}`) : "";
-    process.stdout.write(`\n${INDENT}${badge} ${action}${info}\n`);
+    process.stdout.write(`${INDENT}${badge} ${action}${info}\n`);
     this.repinBar();
 
     this.startThinkingAnimation();
@@ -135,7 +135,7 @@ export class StreamRenderer {
       this.eraseBar();
       if (this.toolsUsed.length > 0) {
         process.stdout.write(
-          `${INDENT}${chalk.green("✓")} ${chalk.dim(`Used tools: ${this.toolsUsed.join(", ")}`)}\n\n`
+          `${INDENT}${chalk.green("✓")} ${chalk.dim(`Used tools: ${this.toolsUsed.join(", ")}`)}\n`
         );
       }
     }
@@ -155,7 +155,7 @@ export class StreamRenderer {
       this.eraseBar();
       if (this.toolsUsed.length > 0) {
         process.stdout.write(
-          `${INDENT}${chalk.green("✓")} ${chalk.dim(`Used tools: ${this.toolsUsed.join(", ")}`)}\n\n`
+          `${INDENT}${chalk.green("✓")} ${chalk.dim(`Used tools: ${this.toolsUsed.join(", ")}`)}\n`
         );
       }
     }

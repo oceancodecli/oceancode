@@ -17,7 +17,7 @@ import {
   runCommand,
   saveProviderKey,
   validateProviderKey
-} from "./chunk-DXUS3QSE.js";
+} from "./chunk-U5PZQWEB.js";
 
 // src/index.ts
 import { Command } from "commander";
@@ -220,7 +220,7 @@ async function interactiveChatCommand(options) {
       lines.push(line);
     }
     if (lines.length > 0) {
-      const { runCommand: runCommand2 } = await import("./run-PRFROBBF.js");
+      const { runCommand: runCommand2 } = await import("./run-WPMSAWQ3.js");
       await runCommand2(lines, { model: currentBackendModel });
     }
     return;

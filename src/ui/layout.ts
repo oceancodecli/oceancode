@@ -42,7 +42,6 @@ export function renderTopBar(modelName: string, cwd = process.cwd()): void {
   const folderStr = cwd.length > 35 ? "..." + cwd.slice(-32) : cwd;
 
   renderBigLogo(INDENT);
-  console.log("");
 
   const leftText = folderStr;
   const rightText = modelName + "  /help";
@@ -57,11 +56,10 @@ export function renderTopBar(modelName: string, cwd = process.cwd()): void {
       chalk.dim("/help")
   );
   console.log(INDENT + chalk.dim("─".repeat(Math.max(40, width - 4))));
-  console.log("");
 }
 
 export function renderUserPrompt(text: string): void {
-  console.log(`\n${chalk.hex(OCEAN_BLUE)("▌")} ${chalk.bold.white(text)}`);
+  console.log(`${chalk.hex(OCEAN_BLUE)("▌")} ${chalk.bold.white(text)}`);
 }
 
 export function renderUserMessageCard(text: string, _modelName?: string): void {
@@ -73,7 +71,6 @@ export function renderUserMessageCard(text: string, _modelName?: string): void {
     const pad = Math.max(2, width - l.length - 3);
     console.log(bar + bg(" " + l + " ".repeat(pad)));
   }
-  console.log("");
 }
 
 export function renderPromptFooter(modelName: string): void {
@@ -101,5 +98,5 @@ export function renderFooter(modelName: string, durationSec: number, agent = "Bu
   const modelLabel = chalk.hex("#94a3b8")(modelName);
   const timeLabel = chalk.dim(`${durationSec.toFixed(1)}s`);
 
-  console.log(`\n${INDENT}${icon}  ${agentLabel}${dot}${modelLabel}${dot}${timeLabel}`);
+  console.log(`${INDENT}${icon}  ${agentLabel}${dot}${modelLabel}${dot}${timeLabel}`);
 }
