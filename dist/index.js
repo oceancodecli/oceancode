@@ -249,6 +249,7 @@ async function interactiveChatCommand(options) {
   let currentScrollBottom = 0;
   let contentRow = 8;
   let lastBarStartRow = 0;
+  let lastBarLinesCount = 0;
   const printToContent = (text) => {
     if (!process.stdout.isTTY) {
       process.stdout.write(text.endsWith("\n") ? text : text + "\n");
@@ -295,7 +296,7 @@ async function interactiveChatCommand(options) {
       resetScrollRegion();
       const rows = process.stdout.rows || 24;
       if (lastBarStartRow > 0) {
-        for (let r = lastBarStartRow; r <= rows; r++) {
+        for (let r = lastBarStartRow; r < lastBarStartRow + lastBarLinesCount; r++) {
           process.stdout.write(`\x1B[${r};1H\x1B[2K`);
         }
       }
@@ -312,7 +313,6 @@ async function interactiveChatCommand(options) {
     const lines = buildBarLines();
     const { scrollBottom } = getBarMetrics(lines.length);
     applyScrollRegion(scrollBottom);
-    lastBarStartRow = 0;
     paintBar();
   };
   if (process.stdout.isTTY) {
@@ -468,12 +468,19 @@ async function interactiveChatCommand(options) {
       const lines = buildBarLines();
       const { rows, barStartRow, scrollBottom } = getBarMetrics(lines.length);
       applyScrollRegion(scrollBottom);
-      if (lastBarStartRow > 0 && lastBarStartRow < barStartRow) {
-        for (let r = lastBarStartRow; r < barStartRow; r++) {
-          process.stdout.write(`\x1B[${r};1H\x1B[2K`);
+      if (lastBarStartRow > 0) {
+        if (lastBarStartRow !== barStartRow) {
+          for (let r = lastBarStartRow; r < lastBarStartRow + lastBarLinesCount; r++) {
+            process.stdout.write(`\x1B[${r};1H\x1B[2K`);
+          }
+        } else if (lastBarLinesCount > lines.length) {
+          for (let r = barStartRow + lines.length; r < barStartRow + lastBarLinesCount; r++) {
+            process.stdout.write(`\x1B[${r};1H\x1B[2K`);
+          }
         }
       }
       lastBarStartRow = barStartRow;
+      lastBarLinesCount = lines.length;
       for (let i = 0; i < lines.length; i++) {
         const r = barStartRow + i;
         process.stdout.write(`\x1B[${r};1H\x1B[2K${lines[i]}`);
@@ -1056,14 +1063,7 @@ Please accomplish this goal systematically:
   };
   process.stdin.on("keypress", onKeypress);
   if (process.stdout.isTTY) {
-    process.stdout.on("resize", () => {
-      const { scrollBottom } = getBarMetrics(buildBarLines().length);
-      applyScrollRegion(scrollBottom);
-      paintBar();
-    });
-  }
-  if (process.stdout.isTTY) {
-    process.stdout.write("\x1B[2J\x1B[H");
+    process.stdout.write("\x1B[2J\x1B[3J\x1B[H");
     const { scrollBottom } = getBarMetrics(3);
     applyScrollRegion(scrollBottom);
     process.stdout.write("\x1B[1;1H");

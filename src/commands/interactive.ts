@@ -113,6 +113,7 @@ export async function interactiveChatCommand(options?: { model?: string }) {
   let currentScrollBottom = 0;
   let contentRow = 8; // Row right below the top divider
   let lastBarStartRow = 0;
+  let lastBarLinesCount = 0;
 
   const printToContent = (text: string) => {
     if (!process.stdout.isTTY) {
@@ -165,7 +166,7 @@ export async function interactiveChatCommand(options?: { model?: string }) {
       resetScrollRegion();
       const rows = process.stdout.rows || 24;
       if (lastBarStartRow > 0) {
-        for (let r = lastBarStartRow; r <= rows; r++) {
+        for (let r = lastBarStartRow; r < lastBarStartRow + lastBarLinesCount; r++) {
           process.stdout.write(`\x1b[${r};1H\x1b[2K`);
         }
       }
@@ -181,7 +182,6 @@ export async function interactiveChatCommand(options?: { model?: string }) {
     const lines = buildBarLines();
     const { scrollBottom } = getBarMetrics(lines.length);
     applyScrollRegion(scrollBottom);
-    lastBarStartRow = 0;
     paintBar();
   };
   if (process.stdout.isTTY) {
@@ -370,13 +370,20 @@ export async function interactiveChatCommand(options?: { model?: string }) {
 
       applyScrollRegion(scrollBottom);
 
-      // Erase any ghost rows left behind if the bar shrank (e.g. autocomplete closed or filtered)
-      if (lastBarStartRow > 0 && lastBarStartRow < barStartRow) {
-        for (let r = lastBarStartRow; r < barStartRow; r++) {
-          process.stdout.write(`\x1b[${r};1H\x1b[2K`);
+      // Erase previous bar rows if the bar moved or shrank
+      if (lastBarStartRow > 0) {
+        if (lastBarStartRow !== barStartRow) {
+          for (let r = lastBarStartRow; r < lastBarStartRow + lastBarLinesCount; r++) {
+            process.stdout.write(`\x1b[${r};1H\x1b[2K`);
+          }
+        } else if (lastBarLinesCount > lines.length) {
+          for (let r = barStartRow + lines.length; r < barStartRow + lastBarLinesCount; r++) {
+            process.stdout.write(`\x1b[${r};1H\x1b[2K`);
+          }
         }
       }
       lastBarStartRow = barStartRow;
+      lastBarLinesCount = lines.length;
 
       // Clear and paint bar lines at the bottom of the terminal screen
       for (let i = 0; i < lines.length; i++) {
@@ -1070,18 +1077,9 @@ export async function interactiveChatCommand(options?: { model?: string }) {
 
   process.stdin.on("keypress", onKeypress);
 
-  // Resize handler — reapply scroll region and repaint
+  // ── Startup: clear screen, clear scrollback buffer, set scroll region, draw header + glued bar ─────
   if (process.stdout.isTTY) {
-    process.stdout.on("resize", () => {
-      const { scrollBottom } = getBarMetrics(buildBarLines().length);
-      applyScrollRegion(scrollBottom);
-      paintBar();
-    });
-  }
-
-  // ── Startup: clear screen, set scroll region, draw header + glued bar ─────
-  if (process.stdout.isTTY) {
-    process.stdout.write("\x1b[2J\x1b[H"); // clear full screen & cursor to top-left
+    process.stdout.write("\x1b[2J\x1b[3J\x1b[H"); // clear full screen, scrollback history & move cursor to top-left
     const { scrollBottom } = getBarMetrics(3);
     applyScrollRegion(scrollBottom);
     process.stdout.write("\x1b[1;1H");
