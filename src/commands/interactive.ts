@@ -112,6 +112,19 @@ export async function interactiveChatCommand(options?: { model?: string }) {
   // ─── Glued Bottom Bar & Scroll Region ──────────────────────────────────────
   let currentScrollBottom = 0;
   let contentRow = 8; // Row right below the top divider
+  let lastBarStartRow = 0;
+
+  const printToContent = (text: string) => {
+    if (!process.stdout.isTTY) {
+      process.stdout.write(text.endsWith("\n") ? text : text + "\n");
+      return;
+    }
+    process.stdout.write(`\x1b[${contentRow};1H`);
+    const formatted = text.endsWith("\n") ? text : text + "\n";
+    process.stdout.write(formatted);
+    const lineCount = (formatted.match(/\n/g) || []).length;
+    contentRow = Math.min(currentScrollBottom || 20, contentRow + lineCount);
+  };
 
   const getBarMetrics = (linesCount: number) => {
     const rows = process.stdout.rows || 24;
@@ -141,6 +154,11 @@ export async function interactiveChatCommand(options?: { model?: string }) {
     if (process.stdout.isTTY) {
       resetScrollRegion();
       const rows = process.stdout.rows || 24;
+      if (lastBarStartRow > 0) {
+        for (let r = lastBarStartRow; r <= rows; r++) {
+          process.stdout.write(`\x1b[${r};1H\x1b[2K`);
+        }
+      }
       process.stdout.write(`\x1b[${rows};1H\n\x1b[?25h`);
       try {
         process.stdin.setRawMode(false);
@@ -201,7 +219,17 @@ export async function interactiveChatCommand(options?: { model?: string }) {
       if (filtered.length === 0) {
         lines.push(chalk.dim("  No matching models found."));
       } else {
-        filtered.forEach((m, idx) => {
+        const MAX_MODELS = 6;
+        let startIdx = 0;
+        if (filtered.length > MAX_MODELS) {
+          startIdx = Math.max(0, Math.min(modelIndex - 2, filtered.length - MAX_MODELS));
+        }
+        const visibleModels = filtered.slice(startIdx, startIdx + MAX_MODELS);
+        if (filtered.length > MAX_MODELS) {
+          lines.push(chalk.dim(`  Models (${modelIndex + 1}/${filtered.length}) · ↑/↓ to navigate`));
+        }
+        visibleModels.forEach((m, relIdx) => {
+          const idx = startIdx + relIdx;
           const isCurrent = m.id === currentBackendModel;
           const prefix = isCurrent ? "● " : "  ";
           const left = prefix + m.name;
@@ -272,10 +300,22 @@ export async function interactiveChatCommand(options?: { model?: string }) {
         const matching = COMMANDS.filter((c) => c.name.startsWith(input));
         if (menuIndex >= matching.length) menuIndex = Math.max(0, matching.length - 1);
         if (matching.length > 0) {
-          matching.forEach((c, idx) => {
+          const MAX_VISIBLE = 6;
+          let startIdx = 0;
+          if (matching.length > MAX_VISIBLE) {
+            startIdx = Math.max(0, Math.min(menuIndex - 2, matching.length - MAX_VISIBLE));
+          }
+          const visible = matching.slice(startIdx, startIdx + MAX_VISIBLE);
+
+          lines.push(
+            chalk.dim(`  Commands (${menuIndex + 1}/${matching.length}) · ↑/↓ navigate · Tab/Enter select · Esc cancel`)
+          );
+          visible.forEach((c, relIdx) => {
+            const absIdx = startIdx + relIdx;
+            const isSelected = absIdx === menuIndex;
             const row = "  " + c.name.padEnd(12) + c.desc;
             const padded = row + " ".repeat(Math.max(2, width - row.length));
-            lines.push(idx === menuIndex ? peachBg(padded) : chalk.white(row));
+            lines.push(isSelected ? peachBg(padded) : chalk.white(row));
           });
         }
       }
@@ -307,6 +347,14 @@ export async function interactiveChatCommand(options?: { model?: string }) {
 
     applyScrollRegion(scrollBottom);
 
+    // Erase any ghost rows left behind if the bar shrank (e.g. autocomplete closed or filtered)
+    if (lastBarStartRow > 0 && lastBarStartRow < barStartRow) {
+      for (let r = lastBarStartRow; r < barStartRow; r++) {
+        process.stdout.write(`\x1b[${r};1H\x1b[2K`);
+      }
+    }
+    lastBarStartRow = barStartRow;
+
     // Clear and paint bar lines at the bottom of the terminal screen
     for (let i = 0; i < lines.length; i++) {
       const r = barStartRow + i;
@@ -316,8 +364,10 @@ export async function interactiveChatCommand(options?: { model?: string }) {
     // Place cursor appropriately
     if (!isProcessing && mode === "normal") {
       process.stdout.write("\x1b[?25h");
+      const inputLineIdx = lines.findIndex((l) => l.startsWith(`${bar} ${input}█`) || l.startsWith(`${bar} `));
+      const targetRow = inputLineIdx !== -1 ? barStartRow + inputLineIdx : barStartRow;
       const col = Math.min(process.stdout.columns || 80, 3 + input.length);
-      process.stdout.write(`\x1b[${barStartRow};${col}H`);
+      process.stdout.write(`\x1b[${targetRow};${col}H`);
     } else if (!isProcessing && mode === "model_selector") {
       process.stdout.write("\x1b[?25h");
       const col = Math.min(process.stdout.columns || 80, 9 + modelSearch.length);
@@ -592,7 +642,7 @@ export async function interactiveChatCommand(options?: { model?: string }) {
         input = "";
         modelSearch = "";
         if (selectedFriendly) {
-          console.log(chalk.green(`\n✓ Active model changed to: ${selectedFriendly} (${selectedId})\n`));
+          printToContent(chalk.green(`✓ Active model changed to: ${selectedFriendly} (${selectedId})`));
         }
         render();
         return;
@@ -680,6 +730,7 @@ export async function interactiveChatCommand(options?: { model?: string }) {
         }
         renderTopBar(getFriendlyModelName(currentBackendModel));
         contentRow = 8;
+        lastBarStartRow = 0;
         paintBar();
         return;
       }
@@ -688,10 +739,9 @@ export async function interactiveChatCommand(options?: { model?: string }) {
       if (submitted === "/init") {
         try {
           const res = initializeAgentsDoc(process.cwd());
-          console.log(chalk.green(`\n✔ ${res.summary}`));
-          console.log(chalk.dim(`  Location: ${res.filePath}\n`));
+          printToContent(`${chalk.green(`✔ ${res.summary}`)}\n${chalk.dim(`  Location: ${res.filePath}`)}`);
         } catch (err: any) {
-          console.error(chalk.red(`\n⚠️ Initialization failed: ${err.message}\n`));
+          printToContent(chalk.red(`⚠️ Initialization failed: ${err.message}`));
         }
         render();
         return;
@@ -701,9 +751,9 @@ export async function interactiveChatCommand(options?: { model?: string }) {
       if (submitted === "/new") {
         try {
           session = await client.createSession("Ocean Session", process.cwd());
-          console.log(chalk.green("\n✔ Started a new coding session.\n"));
+          printToContent(chalk.green("✔ Started a new coding session."));
         } catch (err: any) {
-          console.error(chalk.red(`\nFailed to create new session: ${err.message}\n`));
+          printToContent(chalk.red(`Failed to create new session: ${err.message}`));
         }
         render();
         return;
@@ -715,15 +765,15 @@ export async function interactiveChatCommand(options?: { model?: string }) {
           try {
             const success = await client.revertSession(session.id, lastUserMsgId);
             if (success) {
-              console.log(chalk.green("\n✔ Reverted the last AI action and restored previous file states.\n"));
+              printToContent(chalk.green("✔ Reverted the last AI action and restored previous file states."));
             } else {
-              console.log(chalk.yellow("\nCould not revert the last action.\n"));
+              printToContent(chalk.yellow("Could not revert the last action."));
             }
           } catch (err: any) {
-            console.error(chalk.red(`\nRevert failed: ${err.message}\n`));
+            printToContent(chalk.red(`Revert failed: ${err.message}`));
           }
         } else {
-          console.log(chalk.yellow("\nNo previous action found to undo.\n"));
+          printToContent(chalk.yellow("No previous action found to undo."));
         }
         render();
         return;
@@ -732,7 +782,7 @@ export async function interactiveChatCommand(options?: { model?: string }) {
       // /redo: Re-applies or regenerates the last action
       if (submitted === "/redo") {
         if (!lastSubmittedPrompt) {
-          console.log(chalk.yellow("\nNo previous action to redo.\n"));
+          printToContent(chalk.yellow("No previous action to redo."));
           render();
           return;
         }
@@ -744,9 +794,9 @@ export async function interactiveChatCommand(options?: { model?: string }) {
       if (submitted.startsWith("/goal")) {
         const goalDesc = submitted.replace(/^\/goal\s*/, "").trim();
         if (!goalDesc) {
-          console.log(
+          printToContent(
             chalk.yellow(
-              "\nPlease provide a goal description.\nUsage: /goal <your objective or feature description>\nExample: /goal Add user authentication with JWT and refresh tokens\n"
+              "Please provide a goal description.\nUsage: /goal <your objective or feature description>\nExample: /goal Add user authentication with JWT and refresh tokens"
             )
           );
           render();
@@ -763,17 +813,17 @@ export async function interactiveChatCommand(options?: { model?: string }) {
         const keyArg = parts[2];
 
         if (provArg && keyArg) {
-          console.log(chalk.cyan(`\nValidating API key with ${provArg.toUpperCase()}...`));
+          printToContent(chalk.cyan(`Validating API key with ${provArg.toUpperCase()}...`));
           const val = await validateProviderKey(provArg, keyArg);
           if (val.valid) {
             saveProviderKey(provArg, keyArg);
-            console.log(
+            printToContent(
               chalk.green(
-                `✔ Successfully verified and connected ${provArg.toUpperCase()}! Its models are now unlocked in /models.\n`
+                `✔ Successfully verified and connected ${provArg.toUpperCase()}! Its models are now unlocked in /models.`
               )
             );
           } else {
-            console.error(chalk.red(`\n⚠️ Validation failed for ${provArg.toUpperCase()}: ${val.message}\n`));
+            printToContent(chalk.red(`⚠️ Validation failed for ${provArg.toUpperCase()}: ${val.message}`));
           }
           render();
           return;
@@ -798,9 +848,9 @@ export async function interactiveChatCommand(options?: { model?: string }) {
           const serverName = parts[2];
           const serverCmdOrUrl = parts.slice(3).join(" ");
           if (!serverName || !serverCmdOrUrl) {
-            console.log(
+            printToContent(
               chalk.yellow(
-                "\nUsage: /mcp add <server-name> <command-or-url>\nExamples:\n  /mcp add filesystem npx -y @modelcontextprotocol/server-filesystem .\n  /mcp add remote https://example.com/mcp\n"
+                "Usage: /mcp add <server-name> <command-or-url>\nExamples:\n  /mcp add filesystem npx -y @modelcontextprotocol/server-filesystem .\n  /mcp add remote https://example.com/mcp"
               )
             );
             render();
@@ -813,8 +863,8 @@ export async function interactiveChatCommand(options?: { model?: string }) {
             : { type: "local", command: serverCmdOrUrl.split(" "), enabled: true };
 
           saveMcpServer(serverName, mcpConfig);
-          console.log(
-            chalk.green(`\n✓ Added MCP server "${serverName}" (${mcpConfig.type}). Configured in opencode.json.\n`)
+          printToContent(
+            chalk.green(`✓ Added MCP server "${serverName}" (${mcpConfig.type}). Configured in opencode.json.`)
           );
           render();
           return;
@@ -826,9 +876,9 @@ export async function interactiveChatCommand(options?: { model?: string }) {
         const names = Array.from(new Set([...Object.keys(configured), ...Object.keys(live)]));
 
         if (names.length === 0) {
-          console.log(
+          printToContent(
             chalk.dim(
-              "\nNo Model Context Protocol (MCP) servers configured.\n\nTo add an MCP server, run:\n  /mcp add <name> <command-or-url>\nExample:\n  /mcp add filesystem npx -y @modelcontextprotocol/server-filesystem .\n"
+              "No Model Context Protocol (MCP) servers configured.\n\nTo add an MCP server, run:\n  /mcp add <name> <command-or-url>\nExample:\n  /mcp add filesystem npx -y @modelcontextprotocol/server-filesystem ."
             )
           );
         } else {
@@ -843,9 +893,11 @@ export async function interactiveChatCommand(options?: { model?: string }) {
             })
             .join("\n");
 
-          console.log(chalk.bold("\nModel Context Protocol (MCP) Servers:"));
-          console.log(lines);
-          console.log(chalk.dim("\nAdd new servers with: /mcp add <name> <command>\n"));
+          printToContent(
+            chalk.bold("Model Context Protocol (MCP) Servers:\n") +
+              lines +
+              chalk.dim("\n\nAdd new servers with: /mcp add <name> <command>")
+          );
         }
         render();
         return;
@@ -868,7 +920,7 @@ export async function interactiveChatCommand(options?: { model?: string }) {
         } else {
           currentAgent = currentAgent === "build" ? "plan" : "build";
         }
-        console.log(chalk.cyan(`\n✓ Switched mode to: ${currentAgent.toUpperCase()}\n`));
+        printToContent(chalk.cyan(`✓ Switched mode to: ${currentAgent.toUpperCase()}`));
         render();
         return;
       }
@@ -877,7 +929,7 @@ export async function interactiveChatCommand(options?: { model?: string }) {
         try {
           const diffs = await client.getSessionDiff(session.id);
           if (!diffs || diffs.length === 0) {
-            console.log(chalk.dim("\nNo file modifications recorded in the current session.\n"));
+            printToContent(chalk.dim("No file modifications recorded in the current session."));
           } else {
             const diffSummary = diffs
               .map(
@@ -885,11 +937,10 @@ export async function interactiveChatCommand(options?: { model?: string }) {
                   `  • ${d.path || d.file || "file"} (+${d.additions || 0} -${d.deletions || 0})`
               )
               .join("\n");
-            console.log(chalk.bold(`\nModified Files (${diffs.length}):`));
-            console.log(diffSummary + "\n");
+            printToContent(chalk.bold(`Modified Files (${diffs.length}):\n`) + diffSummary);
           }
         } catch (err: any) {
-          console.error(chalk.red(`\nFailed to retrieve diff: ${err.message}\n`));
+          printToContent(chalk.red(`Failed to retrieve diff: ${err.message}`));
         }
         render();
         return;
@@ -898,9 +949,9 @@ export async function interactiveChatCommand(options?: { model?: string }) {
       if (submitted === "/compact") {
         try {
           await client.summarizeSession(session.id);
-          console.log(chalk.green("\n✓ Session context memory compacted and summarized successfully.\n"));
+          printToContent(chalk.green("✓ Session context memory compacted and summarized successfully."));
         } catch (err: any) {
-          console.error(chalk.red(`\nCompact failed: ${err.message}\n`));
+          printToContent(chalk.red(`Compact failed: ${err.message}`));
         }
         render();
         return;
@@ -913,7 +964,7 @@ export async function interactiveChatCommand(options?: { model?: string }) {
           const resolvedId = getBackendModelId(targetArg);
           currentBackendModel = resolvedId;
           const friendly = getFriendlyModelName(resolvedId);
-          console.log(chalk.green(`\n✓ Switched model to: ${friendly} (${resolvedId})\n`));
+          printToContent(chalk.green(`✓ Switched model to: ${friendly} (${resolvedId})`));
           render();
           return;
         } else {
@@ -926,18 +977,18 @@ export async function interactiveChatCommand(options?: { model?: string }) {
       }
 
       if (submitted === "/help") {
-        console.log(chalk.bold("\nAvailable Commands:"));
-        for (const c of COMMANDS) {
-          console.log(`  ${chalk.hex(OCEAN_BLUE).bold(c.name.padEnd(12))} ${chalk.dim(c.desc)}`);
-        }
-        console.log("");
+        const helpLines = [
+          chalk.bold("Available Commands:"),
+          ...COMMANDS.map((c) => `  ${chalk.hex(OCEAN_BLUE).bold(c.name.padEnd(12))} ${chalk.dim(c.desc)}`),
+        ].join("\n");
+        printToContent(helpLines);
         render();
         return;
       }
 
       if (submitted === "/info") {
-        console.log(
-          `\nSession Details:\n  Model:     ${getFriendlyModelName(currentBackendModel)}\n  Agent:     ${currentAgent.toUpperCase()}\n  Directory: ${session.directory}\n  Session:   ${session.id}\n`
+        printToContent(
+          `Session Details:\n  Model:     ${getFriendlyModelName(currentBackendModel)}\n  Agent:     ${currentAgent.toUpperCase()}\n  Directory: ${session.directory}\n  Session:   ${session.id}`
         );
         render();
         return;

@@ -248,6 +248,18 @@ async function interactiveChatCommand(options) {
   const renderer = new StreamRenderer();
   let currentScrollBottom = 0;
   let contentRow = 8;
+  let lastBarStartRow = 0;
+  const printToContent = (text) => {
+    if (!process.stdout.isTTY) {
+      process.stdout.write(text.endsWith("\n") ? text : text + "\n");
+      return;
+    }
+    process.stdout.write(`\x1B[${contentRow};1H`);
+    const formatted = text.endsWith("\n") ? text : text + "\n";
+    process.stdout.write(formatted);
+    const lineCount = (formatted.match(/\n/g) || []).length;
+    contentRow = Math.min(currentScrollBottom || 20, contentRow + lineCount);
+  };
   const getBarMetrics = (linesCount) => {
     const rows = process.stdout.rows || 24;
     const barRows = linesCount;
@@ -273,6 +285,11 @@ async function interactiveChatCommand(options) {
     if (process.stdout.isTTY) {
       resetScrollRegion();
       const rows = process.stdout.rows || 24;
+      if (lastBarStartRow > 0) {
+        for (let r = lastBarStartRow; r <= rows; r++) {
+          process.stdout.write(`\x1B[${r};1H\x1B[2K`);
+        }
+      }
       process.stdout.write(`\x1B[${rows};1H
 \x1B[?25h`);
       try {
@@ -303,7 +320,7 @@ async function interactiveChatCommand(options) {
   const buildBarLines = () => {
     const cols = process.stdout.columns || 80;
     const friendlyModel = getFriendlyModelName(currentBackendModel);
-    const bar = chalk.hex(OCEAN_BLUE)("\u2502");
+    const bar2 = chalk.hex(OCEAN_BLUE)("\u2502");
     const width = Math.min(cols - 4, 80);
     const peachBg = chalk.bgHex("#fba978").black;
     const lines = [];
@@ -323,7 +340,17 @@ async function interactiveChatCommand(options) {
       if (filtered.length === 0) {
         lines.push(chalk.dim("  No matching models found."));
       } else {
-        filtered.forEach((m, idx) => {
+        const MAX_MODELS = 6;
+        let startIdx = 0;
+        if (filtered.length > MAX_MODELS) {
+          startIdx = Math.max(0, Math.min(modelIndex - 2, filtered.length - MAX_MODELS));
+        }
+        const visibleModels = filtered.slice(startIdx, startIdx + MAX_MODELS);
+        if (filtered.length > MAX_MODELS) {
+          lines.push(chalk.dim(`  Models (${modelIndex + 1}/${filtered.length}) \xB7 \u2191/\u2193 to navigate`));
+        }
+        visibleModels.forEach((m, relIdx) => {
+          const idx = startIdx + relIdx;
           const isCurrent = m.id === currentBackendModel;
           const prefix = isCurrent ? "\u25CF " : "  ";
           const left = prefix + m.name;
@@ -365,7 +392,7 @@ async function interactiveChatCommand(options) {
         lines.push("");
         const masked = connectKeyInput.length > 8 ? connectKeyInput.slice(0, 4) + "\u2022".repeat(connectKeyInput.length - 8) + connectKeyInput.slice(-4) : "\u2022".repeat(connectKeyInput.length);
         const displayKey = connectKeyInput ? masked : chalk.dim("Paste or type API key here");
-        lines.push(`${bar} Key: ${displayKey}\u2588`);
+        lines.push(`${bar2} Key: ${displayKey}\u2588`);
         if (connectErrorMsg) {
           lines.push("");
           lines.push(chalk.hex("#ef4444").bold(`  \u26A0\uFE0F  ${connectErrorMsg}`));
@@ -384,10 +411,21 @@ async function interactiveChatCommand(options) {
         const matching = COMMANDS.filter((c) => c.name.startsWith(input));
         if (menuIndex >= matching.length) menuIndex = Math.max(0, matching.length - 1);
         if (matching.length > 0) {
-          matching.forEach((c, idx) => {
+          const MAX_VISIBLE = 6;
+          let startIdx = 0;
+          if (matching.length > MAX_VISIBLE) {
+            startIdx = Math.max(0, Math.min(menuIndex - 2, matching.length - MAX_VISIBLE));
+          }
+          const visible = matching.slice(startIdx, startIdx + MAX_VISIBLE);
+          lines.push(
+            chalk.dim(`  Commands (${menuIndex + 1}/${matching.length}) \xB7 \u2191/\u2193 navigate \xB7 Tab/Enter select \xB7 Esc cancel`)
+          );
+          visible.forEach((c, relIdx) => {
+            const absIdx = startIdx + relIdx;
+            const isSelected = absIdx === menuIndex;
             const row = "  " + c.name.padEnd(12) + c.desc;
             const padded = row + " ".repeat(Math.max(2, width - row.length));
-            lines.push(idx === menuIndex ? peachBg(padded) : chalk.white(row));
+            lines.push(isSelected ? peachBg(padded) : chalk.white(row));
           });
         }
       }
@@ -395,11 +433,11 @@ async function interactiveChatCommand(options) {
       if (isProcessing) {
         const frameIdx = renderer.getThinkingFrame() % THINKING_FRAMES.length;
         const thinkingText = THINKING_FRAMES[frameIdx].trim();
-        lines.push(`${bar} ${thinkingText}`);
+        lines.push(`${bar2} ${thinkingText}`);
       } else {
-        lines.push(`${bar} ${input}\u2588`);
+        lines.push(`${bar2} ${input}\u2588`);
       }
-      lines.push(`${bar}`);
+      lines.push(`${bar2}`);
       lines.push(
         `  ${chalk.hex(OCEAN_BLUE).bold(friendlyAgent)} ${chalk.dim("\xB7")} ${chalk.white(friendlyModel)} ${chalk.dim("\xB7 OceanCode")}`
       );
@@ -411,14 +449,22 @@ async function interactiveChatCommand(options) {
     const lines = buildBarLines();
     const { rows, barStartRow, scrollBottom } = getBarMetrics(lines.length);
     applyScrollRegion(scrollBottom);
+    if (lastBarStartRow > 0 && lastBarStartRow < barStartRow) {
+      for (let r = lastBarStartRow; r < barStartRow; r++) {
+        process.stdout.write(`\x1B[${r};1H\x1B[2K`);
+      }
+    }
+    lastBarStartRow = barStartRow;
     for (let i = 0; i < lines.length; i++) {
       const r = barStartRow + i;
       process.stdout.write(`\x1B[${r};1H\x1B[2K${lines[i]}`);
     }
     if (!isProcessing && mode === "normal") {
       process.stdout.write("\x1B[?25h");
+      const inputLineIdx = lines.findIndex((l) => l.startsWith(`${bar} ${input}\u2588`) || l.startsWith(`${bar} `));
+      const targetRow = inputLineIdx !== -1 ? barStartRow + inputLineIdx : barStartRow;
       const col = Math.min(process.stdout.columns || 80, 3 + input.length);
-      process.stdout.write(`\x1B[${barStartRow};${col}H`);
+      process.stdout.write(`\x1B[${targetRow};${col}H`);
     } else if (!isProcessing && mode === "model_selector") {
       process.stdout.write("\x1B[?25h");
       const col = Math.min(process.stdout.columns || 80, 9 + modelSearch.length);
@@ -647,9 +693,7 @@ async function interactiveChatCommand(options) {
         input = "";
         modelSearch = "";
         if (selectedFriendly) {
-          console.log(chalk.green(`
-\u2713 Active model changed to: ${selectedFriendly} (${selectedId})
-`));
+          printToContent(chalk.green(`\u2713 Active model changed to: ${selectedFriendly} (${selectedId})`));
         }
         render();
         return;
@@ -722,20 +766,17 @@ async function interactiveChatCommand(options) {
         }
         renderTopBar(getFriendlyModelName(currentBackendModel));
         contentRow = 8;
+        lastBarStartRow = 0;
         paintBar();
         return;
       }
       if (submitted === "/init") {
         try {
           const res = initializeAgentsDoc(process.cwd());
-          console.log(chalk.green(`
-\u2714 ${res.summary}`));
-          console.log(chalk.dim(`  Location: ${res.filePath}
-`));
+          printToContent(`${chalk.green(`\u2714 ${res.summary}`)}
+${chalk.dim(`  Location: ${res.filePath}`)}`);
         } catch (err) {
-          console.error(chalk.red(`
-\u26A0\uFE0F Initialization failed: ${err.message}
-`));
+          printToContent(chalk.red(`\u26A0\uFE0F Initialization failed: ${err.message}`));
         }
         render();
         return;
@@ -743,11 +784,9 @@ async function interactiveChatCommand(options) {
       if (submitted === "/new") {
         try {
           session = await client.createSession("Ocean Session", process.cwd());
-          console.log(chalk.green("\n\u2714 Started a new coding session.\n"));
+          printToContent(chalk.green("\u2714 Started a new coding session."));
         } catch (err) {
-          console.error(chalk.red(`
-Failed to create new session: ${err.message}
-`));
+          printToContent(chalk.red(`Failed to create new session: ${err.message}`));
         }
         render();
         return;
@@ -757,24 +796,22 @@ Failed to create new session: ${err.message}
           try {
             const success = await client.revertSession(session.id, lastUserMsgId);
             if (success) {
-              console.log(chalk.green("\n\u2714 Reverted the last AI action and restored previous file states.\n"));
+              printToContent(chalk.green("\u2714 Reverted the last AI action and restored previous file states."));
             } else {
-              console.log(chalk.yellow("\nCould not revert the last action.\n"));
+              printToContent(chalk.yellow("Could not revert the last action."));
             }
           } catch (err) {
-            console.error(chalk.red(`
-Revert failed: ${err.message}
-`));
+            printToContent(chalk.red(`Revert failed: ${err.message}`));
           }
         } else {
-          console.log(chalk.yellow("\nNo previous action found to undo.\n"));
+          printToContent(chalk.yellow("No previous action found to undo."));
         }
         render();
         return;
       }
       if (submitted === "/redo") {
         if (!lastSubmittedPrompt) {
-          console.log(chalk.yellow("\nNo previous action to redo.\n"));
+          printToContent(chalk.yellow("No previous action to redo."));
           render();
           return;
         }
@@ -783,9 +820,9 @@ Revert failed: ${err.message}
       if (submitted.startsWith("/goal")) {
         const goalDesc = submitted.replace(/^\/goal\s*/, "").trim();
         if (!goalDesc) {
-          console.log(
+          printToContent(
             chalk.yellow(
-              "\nPlease provide a goal description.\nUsage: /goal <your objective or feature description>\nExample: /goal Add user authentication with JWT and refresh tokens\n"
+              "Please provide a goal description.\nUsage: /goal <your objective or feature description>\nExample: /goal Add user authentication with JWT and refresh tokens"
             )
           );
           render();
@@ -806,21 +843,17 @@ Please accomplish this goal systematically:
         const provArg = parts[1]?.toLowerCase();
         const keyArg = parts[2];
         if (provArg && keyArg) {
-          console.log(chalk.cyan(`
-Validating API key with ${provArg.toUpperCase()}...`));
+          printToContent(chalk.cyan(`Validating API key with ${provArg.toUpperCase()}...`));
           const val = await validateProviderKey(provArg, keyArg);
           if (val.valid) {
             saveProviderKey(provArg, keyArg);
-            console.log(
+            printToContent(
               chalk.green(
-                `\u2714 Successfully verified and connected ${provArg.toUpperCase()}! Its models are now unlocked in /models.
-`
+                `\u2714 Successfully verified and connected ${provArg.toUpperCase()}! Its models are now unlocked in /models.`
               )
             );
           } else {
-            console.error(chalk.red(`
-\u26A0\uFE0F Validation failed for ${provArg.toUpperCase()}: ${val.message}
-`));
+            printToContent(chalk.red(`\u26A0\uFE0F Validation failed for ${provArg.toUpperCase()}: ${val.message}`));
           }
           render();
           return;
@@ -841,9 +874,9 @@ Validating API key with ${provArg.toUpperCase()}...`));
           const serverName = parts[2];
           const serverCmdOrUrl = parts.slice(3).join(" ");
           if (!serverName || !serverCmdOrUrl) {
-            console.log(
+            printToContent(
               chalk.yellow(
-                "\nUsage: /mcp add <server-name> <command-or-url>\nExamples:\n  /mcp add filesystem npx -y @modelcontextprotocol/server-filesystem .\n  /mcp add remote https://example.com/mcp\n"
+                "Usage: /mcp add <server-name> <command-or-url>\nExamples:\n  /mcp add filesystem npx -y @modelcontextprotocol/server-filesystem .\n  /mcp add remote https://example.com/mcp"
               )
             );
             render();
@@ -852,10 +885,8 @@ Validating API key with ${provArg.toUpperCase()}...`));
           const isUrl = serverCmdOrUrl.startsWith("http://") || serverCmdOrUrl.startsWith("https://");
           const mcpConfig = isUrl ? { type: "remote", url: serverCmdOrUrl, enabled: true } : { type: "local", command: serverCmdOrUrl.split(" "), enabled: true };
           saveMcpServer(serverName, mcpConfig);
-          console.log(
-            chalk.green(`
-\u2713 Added MCP server "${serverName}" (${mcpConfig.type}). Configured in opencode.json.
-`)
+          printToContent(
+            chalk.green(`\u2713 Added MCP server "${serverName}" (${mcpConfig.type}). Configured in opencode.json.`)
           );
           render();
           return;
@@ -864,9 +895,9 @@ Validating API key with ${provArg.toUpperCase()}...`));
         const live = await fetchLiveMcpStatus(baseUrl);
         const names = Array.from(/* @__PURE__ */ new Set([...Object.keys(configured), ...Object.keys(live)]));
         if (names.length === 0) {
-          console.log(
+          printToContent(
             chalk.dim(
-              "\nNo Model Context Protocol (MCP) servers configured.\n\nTo add an MCP server, run:\n  /mcp add <name> <command-or-url>\nExample:\n  /mcp add filesystem npx -y @modelcontextprotocol/server-filesystem .\n"
+              "No Model Context Protocol (MCP) servers configured.\n\nTo add an MCP server, run:\n  /mcp add <name> <command-or-url>\nExample:\n  /mcp add filesystem npx -y @modelcontextprotocol/server-filesystem ."
             )
           );
         } else {
@@ -879,9 +910,9 @@ Validating API key with ${provArg.toUpperCase()}...`));
             return `  \u2022 ${n} (${type}): ${badge}
     ${chalk.dim(target)}`;
           }).join("\n");
-          console.log(chalk.bold("\nModel Context Protocol (MCP) Servers:"));
-          console.log(lines);
-          console.log(chalk.dim("\nAdd new servers with: /mcp add <name> <command>\n"));
+          printToContent(
+            chalk.bold("Model Context Protocol (MCP) Servers:\n") + lines + chalk.dim("\n\nAdd new servers with: /mcp add <name> <command>")
+          );
         }
         render();
         return;
@@ -897,9 +928,7 @@ Validating API key with ${provArg.toUpperCase()}...`));
         } else {
           currentAgent = currentAgent === "build" ? "plan" : "build";
         }
-        console.log(chalk.cyan(`
-\u2713 Switched mode to: ${currentAgent.toUpperCase()}
-`));
+        printToContent(chalk.cyan(`\u2713 Switched mode to: ${currentAgent.toUpperCase()}`));
         render();
         return;
       }
@@ -907,19 +936,16 @@ Validating API key with ${provArg.toUpperCase()}...`));
         try {
           const diffs = await client.getSessionDiff(session.id);
           if (!diffs || diffs.length === 0) {
-            console.log(chalk.dim("\nNo file modifications recorded in the current session.\n"));
+            printToContent(chalk.dim("No file modifications recorded in the current session."));
           } else {
             const diffSummary = diffs.map(
               (d) => `  \u2022 ${d.path || d.file || "file"} (+${d.additions || 0} -${d.deletions || 0})`
             ).join("\n");
-            console.log(chalk.bold(`
-Modified Files (${diffs.length}):`));
-            console.log(diffSummary + "\n");
+            printToContent(chalk.bold(`Modified Files (${diffs.length}):
+`) + diffSummary);
           }
         } catch (err) {
-          console.error(chalk.red(`
-Failed to retrieve diff: ${err.message}
-`));
+          printToContent(chalk.red(`Failed to retrieve diff: ${err.message}`));
         }
         render();
         return;
@@ -927,11 +953,9 @@ Failed to retrieve diff: ${err.message}
       if (submitted === "/compact") {
         try {
           await client.summarizeSession(session.id);
-          console.log(chalk.green("\n\u2713 Session context memory compacted and summarized successfully.\n"));
+          printToContent(chalk.green("\u2713 Session context memory compacted and summarized successfully."));
         } catch (err) {
-          console.error(chalk.red(`
-Compact failed: ${err.message}
-`));
+          printToContent(chalk.red(`Compact failed: ${err.message}`));
         }
         render();
         return;
@@ -943,9 +967,7 @@ Compact failed: ${err.message}
           const resolvedId = getBackendModelId(targetArg);
           currentBackendModel = resolvedId;
           const friendly = getFriendlyModelName(resolvedId);
-          console.log(chalk.green(`
-\u2713 Switched model to: ${friendly} (${resolvedId})
-`));
+          printToContent(chalk.green(`\u2713 Switched model to: ${friendly} (${resolvedId})`));
           render();
           return;
         } else {
@@ -957,23 +979,21 @@ Compact failed: ${err.message}
         }
       }
       if (submitted === "/help") {
-        console.log(chalk.bold("\nAvailable Commands:"));
-        for (const c of COMMANDS) {
-          console.log(`  ${chalk.hex(OCEAN_BLUE).bold(c.name.padEnd(12))} ${chalk.dim(c.desc)}`);
-        }
-        console.log("");
+        const helpLines = [
+          chalk.bold("Available Commands:"),
+          ...COMMANDS.map((c) => `  ${chalk.hex(OCEAN_BLUE).bold(c.name.padEnd(12))} ${chalk.dim(c.desc)}`)
+        ].join("\n");
+        printToContent(helpLines);
         render();
         return;
       }
       if (submitted === "/info") {
-        console.log(
-          `
-Session Details:
+        printToContent(
+          `Session Details:
   Model:     ${getFriendlyModelName(currentBackendModel)}
   Agent:     ${currentAgent.toUpperCase()}
   Directory: ${session.directory}
-  Session:   ${session.id}
-`
+  Session:   ${session.id}`
         );
         render();
         return;
