@@ -1,11 +1,11 @@
 {
   "name": "oceancode",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Next-generation CLI coding assistant powered by OpenCode server",
   "main": "dist/index.js",
   "bin": {
-    "oceancode": "./dist/index.js",
-    "ocean": "./dist/index.js"
+    "oceancode": "dist/index.js",
+    "ocean": "dist/index.js"
   },
   "type": "module",
   "files": [
