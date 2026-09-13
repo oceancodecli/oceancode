@@ -145,8 +145,8 @@ export class OceanClient {
   }
 
   async promptSession(sessionID: string, text: string, options?: PromptOptions & { directory?: string }) {
-    let providerID = "opencode";
-    let modelID = "big-pickle";
+    let providerID = "ocean";
+    let modelID = "Qwen3.6-35B-A3B";
 
     if (options?.model) {
       if (options.model.includes("/")) {
@@ -156,6 +156,11 @@ export class OceanClient {
       } else {
         modelID = options.model;
       }
+    }
+
+    if (providerID === "opencode") {
+      providerID = "ocean";
+      modelID = "Qwen3.6-35B-A3B";
     }
 
     const payload = {

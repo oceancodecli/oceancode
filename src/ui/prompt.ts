@@ -80,7 +80,7 @@ export function promptUser(ctx: PromptContext): Promise<string> {
         const filtered = OCEAN_MODELS.filter(
           (m) =>
             m.name.toLowerCase().includes(modelSearch.toLowerCase()) ||
-            m.description.toLowerCase().includes(modelSearch.toLowerCase())
+            (m.description ? m.description.toLowerCase().includes(modelSearch.toLowerCase()) : false)
         );
 
         if (modelIndex >= filtered.length) {
@@ -124,11 +124,29 @@ export function promptUser(ctx: PromptContext): Promise<string> {
         // Bottom Input Box
         const bar = chalk.hex(OCEAN_BLUE)("│");
         const friendlyModel = getFriendlyModelName(ctx.getCurrentModel());
+        lines.push(bar);
         lines.push(`${bar} ${input}█`);
-        lines.push(`${bar}`);
+        lines.push(bar);
         lines.push(
-          `  ${chalk.hex(OCEAN_BLUE).bold("Build")} ${chalk.dim("·")} ${chalk.white(friendlyModel)} ${chalk.dim("· OceanCode")}`
+          `${bar} ${chalk.hex(OCEAN_BLUE).bold("Build")} ${chalk.dim("·")} ${chalk.white(friendlyModel)} ${chalk.dim("OceanCode")}`
         );
+
+        // Status bar line at the very bottom
+        const normCwd = process.cwd().replace(/\\/g, "/");
+        const leftStatus = chalk.dim(normCwd);
+        const midStatus = `${chalk.bold.white("ctrl+p")} ${chalk.dim("commands")}`;
+        const rightStatus = `${chalk.green("●")} ${chalk.cyan("OceanCode 0.1.1")}`;
+
+        const termWidth = process.stdout.columns || 80;
+        const plainLeft = normCwd;
+        const plainMid = "ctrl+p commands";
+        const plainRight = "● OceanCode 0.1.1";
+        const totalLen = plainLeft.length + plainMid.length + plainRight.length;
+        const availableSpace = Math.max(2, termWidth - totalLen - 2);
+        const padLeft = " ".repeat(Math.max(2, Math.floor(availableSpace / 2)));
+        const padRight = " ".repeat(Math.max(2, availableSpace - padLeft.length));
+
+        lines.push(`${leftStatus}${padLeft}${midStatus}${padRight}${rightStatus}`);
       }
 
       for (let i = 0; i < lines.length; i++) {
@@ -150,7 +168,7 @@ export function promptUser(ctx: PromptContext): Promise<string> {
         const filtered = OCEAN_MODELS.filter(
           (m) =>
             m.name.toLowerCase().includes(modelSearch.toLowerCase()) ||
-            m.description.toLowerCase().includes(modelSearch.toLowerCase())
+            (m.description ? m.description.toLowerCase().includes(modelSearch.toLowerCase()) : false)
         );
 
         if (key.name === "escape") {

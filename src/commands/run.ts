@@ -3,7 +3,8 @@ import { ensureServer } from "../server/manager.js";
 import { OceanClient } from "../server/client.js";
 import { StreamRenderer } from "../ui/renderer.js";
 import { renderUserMessageCard } from "../ui/layout.js";
-import { getFriendlyModelName, getBackendModelId } from "../models/registry.js";
+import { getFriendlyModelName, getBackendModelId, DEFAULT_MODEL_ID } from "../models/registry.js";
+import { extractToolDetail } from "../ui/toolLabels.js";
 
 export interface RunOptions {
   model?: string;
@@ -22,7 +23,7 @@ export async function runCommand(messages: string[], options: RunOptions) {
   const client = new OceanClient(baseUrl);
   const renderer = new StreamRenderer();
 
-  const backendModel = options.model ? getBackendModelId(options.model) : "opencode/muse-spark-1.3-contributor-free";
+  const backendModel = options.model ? getBackendModelId(options.model) : DEFAULT_MODEL_ID;
   const friendlyName = getFriendlyModelName(backendModel);
 
   const session = await client.createSession(
@@ -90,18 +91,7 @@ export async function runCommand(messages: string[], options: RunOptions) {
           }
         } else if (part.type === "tool") {
           const toolName = part.tool || "tool";
-          const inputObj = part.state?.input || {};
-          const detail =
-            inputObj.filePath ||
-            inputObj.command ||
-            inputObj.pattern ||
-            inputObj.query ||
-            inputObj.url ||
-            inputObj.name ||
-            part.state?.title ||
-            part.call?.command ||
-            part.call?.path ||
-            "";
+          const detail = extractToolDetail(part);
           const status = part.state?.status || part.status || "";
           renderer.handleTool(toolName, detail, part.id, status);
         }

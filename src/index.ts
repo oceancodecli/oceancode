@@ -7,23 +7,29 @@ import { sessionCommand } from "./commands/session.js";
 import { statsCommand } from "./commands/stats.js";
 import { ensureServer } from "./server/manager.js";
 import { initializeAgentsDoc } from "./utils/init.js";
-import { getStoredCredentials, saveProviderKey, validateProviderKey, SUPPORTED_BYOK_PROVIDERS } from "./server/auth.js";
+import { getStoredCredentials, saveProviderKey, validateProviderKey, removeProviderKey, SUPPORTED_BYOK_PROVIDERS } from "./server/auth.js";
 import { getConfiguredMcpServers, saveMcpServer, fetchLiveMcpStatus, McpServerConfig } from "./server/mcp.js";
 import { getBigLogo } from "./ui/layout.js";
 import chalk from "chalk";
+
+process.title = "oceancode";
+if (process.stdout.isTTY) {
+  process.stdout.write("\x1b]0;oceancode\x07");
+  process.stdout.write("\x1b]2;oceancode\x07");
+}
 
 const program = new Command();
 program.enablePositionalOptions();
 
 program
   .name("oceancode")
-  .description("Ocean CLI: Next-generation AI coding assistant built for large codebases")
-  .version("0.1.0")
+  .description("OceanCode CLI: Next-generation AI coding assistant built for large codebases")
+  .version("0.1.2")
   .addHelpText("before", `\n${getBigLogo()}\n`);
 
 // Default command: launch interactive chat
 program
-  .option("-m, --model <model>", "Model to use (default: opencode/muse-spark-1.3-contributor-free [1M Context])")
+  .option("-m, --model <model>", "Model to use (default: ocean/Qwen3.6-35B-A3B)")
   .action(async (options) => {
     try {
       await interactiveChatCommand({ model: options.model });
@@ -40,7 +46,7 @@ program
 program
   .command("run [message...]")
   .description("Run a prompt or instruction directly")
-  .option("-m, --model <model>", "Model to use (default: opencode/muse-spark-1.3-contributor-free)")
+  .option("-m, --model <model>", "Model to use (default: ocean/Qwen3.6-35B-A3B)")
   .option("-a, --agent <agent>", "Agent mode (default: build)")
   .option("--auto", "Auto-approve tool permissions")
   .action(async (messages: string[], options, cmd) => {
@@ -65,6 +71,7 @@ program
 
 program
   .command("connect [provider] [key]")
+  .alias("login")
   .description("Link provider API keys (OpenAI, Anthropic, Gemini, DeepSeek, Groq, OpenRouter)")
   .action(async (provider?: string, key?: string) => {
     if (provider && key) {
@@ -83,7 +90,7 @@ program
     const creds = getStoredCredentials();
     console.log(chalk.bold("\nBring Your Own Key (BYOK) Status:"));
     for (const p of SUPPORTED_BYOK_PROVIDERS) {
-      const isSet = Boolean(creds[p.id]);
+      const isSet = Boolean(creds[p.id]?.key);
       const badge = isSet ? chalk.green("✔ Connected") : chalk.dim("Not linked");
       console.log(`  • ${p.name.padEnd(16)} (${p.id}): ${badge}`);
     }
@@ -94,6 +101,23 @@ program
     console.log("  oceancode connect anthropic sk-ant-...");
     console.log("  oceancode connect google AIzaSy...");
     console.log("  oceancode connect deepseek sk-...\n");
+    process.exit(0);
+  });
+
+program
+  .command("logout [provider]")
+  .alias("disconnect")
+  .description("Disconnect/remove linked provider API keys or log out all")
+  .action(async (provider?: string) => {
+    if (provider && provider.toLowerCase() !== "all") {
+      removeProviderKey(provider);
+      console.log(chalk.green(`✔ Disconnected API key for ${provider}.`));
+    } else {
+      for (const p of SUPPORTED_BYOK_PROVIDERS) {
+        removeProviderKey(p.id);
+      }
+      console.log(chalk.green("✔ Disconnected all provider API keys."));
+    }
     process.exit(0);
   });
 

@@ -4,11 +4,13 @@ import { ensureServer } from "../server/manager.js";
 import { OceanClient } from "../server/client.js";
 import { OCEAN_BLUE, OCEAN_CYAN, renderTopBar, renderUserMessageCard } from "../ui/layout.js";
 import { StreamRenderer } from "../ui/renderer.js";
+import { runCommand } from "./run.js";
 import {
   OCEAN_MODELS,
   getAvailableOceanModels,
   getFriendlyModelName,
   getBackendModelId,
+  DEFAULT_MODEL_ID,
 } from "../models/registry.js";
 import { initializeAgentsDoc } from "../utils/init.js";
 import {
@@ -24,23 +26,39 @@ import {
   fetchLiveMcpStatus,
   McpServerConfig,
 } from "../server/mcp.js";
+import fs from "node:fs";
+import path from "node:path";
+import { execSync } from "node:child_process";
+import { extractToolDetail } from "../ui/toolLabels.js";
 
 const COMMANDS = [
-  { name: "/init",    desc: "Initializes context / updates AGENTS.md" },
-  { name: "/goal",    desc: "Sets/manages autonomous completion loops" },
-  { name: "/new",     desc: "Clears conversation buffer for a fresh session" },
-  { name: "/undo",    desc: "Rolls back the last prompt and file changes" },
-  { name: "/redo",    desc: "Re-applies or regenerates the last action" },
-  { name: "/models",  desc: "Opens model picker UI to switch active LLMs" },
-  { name: "/connect", desc: "Launches popup setup to link & verify provider API keys" },
-  { name: "/mcp",     desc: "Lists & configures Model Context Protocol servers" },
-  { name: "/diff",    desc: "Inspect files modified in session" },
-  { name: "/agent",   desc: "Switch mode (build / plan)" },
-  { name: "/compact", desc: "Compact & summarize session memory" },
-  { name: "/clear",   desc: "Clear conversation canvas" },
-  { name: "/info",    desc: "Session details & status" },
-  { name: "/help",    desc: "Help & commands" },
-  { name: "/exit",    desc: "Exit the app" },
+  { name: "/init",        desc: "Initializes context / updates AGENTS.md" },
+  { name: "/goal",        desc: "Sets/manages autonomous completion loops" },
+  { name: "/new",         desc: "Clears conversation buffer for a fresh session" },
+  { name: "/undo",        desc: "Rolls back the last prompt and file changes" },
+  { name: "/redo",        desc: "Re-applies or regenerates the last action" },
+  { name: "/models",      desc: "Opens model picker UI to switch active LLMs" },
+  { name: "/connect",     desc: "Launches popup setup to link & verify provider API keys" },
+  { name: "/logout",      desc: "Disconnects linked provider API keys (or /logout all)" },
+  { name: "/mcp",         desc: "Lists & configures Model Context Protocol servers" },
+  { name: "/diff",        desc: "Inspect files modified in session" },
+  { name: "/diff-file",   desc: "Inspect git diff for a specific file" },
+  { name: "/commit",      desc: "Generate conventional commit or commit staged changes" },
+  { name: "/review",      desc: "Review current git diff or target branch" },
+  { name: "/checkpoint",  desc: "Snapshot workspace changes to git stash" },
+  { name: "/exec",        desc: "Execute shell command directly (or use !<cmd>)" },
+  { name: "/open",        desc: "Open a file in your default code editor" },
+  { name: "/add",         desc: "Pin file(s) into model context memory" },
+  { name: "/context",     desc: "Inspect pinned files and loaded memory" },
+  { name: "/drop",        desc: "Remove pinned file from context (or /drop all)" },
+  { name: "/web",         desc: "Fetch web page content and inject into context" },
+  { name: "/export",      desc: "Export conversation transcript to Markdown" },
+  { name: "/agent",       desc: "Switch mode (build / plan)" },
+  { name: "/compact",     desc: "Compact & summarize session memory" },
+  { name: "/clear",       desc: "Clear conversation canvas" },
+  { name: "/info",        desc: "Session details & status" },
+  { name: "/help",        desc: "Help & commands" },
+  { name: "/exit",        desc: "Exit the app" },
 ];
 
 const THINKING_FRAMES = [
@@ -64,7 +82,7 @@ interface HistoryTurn {
 export async function interactiveChatCommand(options?: { model?: string }) {
   let currentBackendModel = options?.model
     ? getBackendModelId(options.model)
-    : "opencode/muse-spark-1.3-contributor-free";
+    : DEFAULT_MODEL_ID;
 
   // Non-TTY (piped) fallback: read stdin and run directly
   if (!process.stdin.isTTY) {
@@ -74,7 +92,6 @@ export async function interactiveChatCommand(options?: { model?: string }) {
       lines.push(line);
     }
     if (lines.length > 0) {
-      const { runCommand } = await import("./run.js");
       await runCommand(lines, { model: currentBackendModel });
     }
     return;
@@ -88,6 +105,10 @@ export async function interactiveChatCommand(options?: { model?: string }) {
 
   // State
   let input = "";
+  let cursorIndex = 0;
+  const promptHistory: string[] = [];
+  let historyIndex = -1;
+  let tempSavedInput = "";
   let mode: "normal" | "model_selector" | "connect_modal" = "normal";
   let menuIndex = 0;
   let modelIndex = 0;
@@ -106,12 +127,12 @@ export async function interactiveChatCommand(options?: { model?: string }) {
   let userMsgId: string | null = null;
   let lastUserMsgId: string | null = null;
   let lastSubmittedPrompt = "";
+  const pinnedContext = new Map<string, string>();
 
   const renderer = new StreamRenderer();
 
   // ─── Glued Bottom Bar & Scroll Region ──────────────────────────────────────
   let currentScrollBottom = 0;
-  let contentRow = 8; // Row right below the top divider
   let lastBarStartRow = 0;
   let lastBarLinesCount = 0;
 
@@ -120,11 +141,11 @@ export async function interactiveChatCommand(options?: { model?: string }) {
       process.stdout.write(text.endsWith("\n") ? text : text + "\n");
       return;
     }
-    process.stdout.write(`\x1b[${contentRow};1H`);
+    process.stdout.write("\x1b8");
     const formatted = text.endsWith("\n") ? text : text + "\n";
     process.stdout.write(formatted);
-    const lineCount = (formatted.match(/\n/g) || []).length;
-    contentRow = Math.min(currentScrollBottom || 20, contentRow + lineCount);
+    process.stdout.write("\x1b7");
+    paintBar();
   };
 
   const getBarMetrics = (linesCount: number) => {
@@ -162,6 +183,7 @@ export async function interactiveChatCommand(options?: { model?: string }) {
     process.off("SIGTERM", onSignal);
     if (activityTimeoutTimer) clearTimeout(activityTimeoutTimer);
     if (process.stdout.isTTY) {
+      process.stdout.write("\x1b[?1000l\x1b[?1002l\x1b[?1006l");
       process.stdout.off("resize", onResize);
       resetScrollRegion();
       const rows = process.stdout.rows || 24;
@@ -222,7 +244,7 @@ export async function interactiveChatCommand(options?: { model?: string }) {
         chalk.dim("esc");
       lines.push(chalk.bold.white(header));
       lines.push(
-        modelSearch ? `Search: ${modelSearch}` : chalk.dim("Search models (e.g. 1m, reasoning, gpt-4o, claude)")
+        modelSearch ? `Search: ${modelSearch}` : chalk.dim("Search models (e.g. qwen, step, flash)")
       );
       lines.push("");
 
@@ -231,9 +253,7 @@ export async function interactiveChatCommand(options?: { model?: string }) {
       const filtered = availableModels.filter(
         (m) =>
           m.name.toLowerCase().includes(searchLower) ||
-          m.id.toLowerCase().includes(searchLower) ||
-          m.tag.toLowerCase().includes(searchLower) ||
-          m.description.toLowerCase().includes(searchLower)
+          m.id.toLowerCase().includes(searchLower)
       );
 
       if (modelIndex >= filtered.length) modelIndex = Math.max(0, filtered.length - 1);
@@ -241,10 +261,10 @@ export async function interactiveChatCommand(options?: { model?: string }) {
       if (filtered.length === 0) {
         lines.push(chalk.dim("  No matching models found."));
       } else {
-        const MAX_MODELS = 6;
+        const MAX_MODELS = 8;
         let startIdx = 0;
         if (filtered.length > MAX_MODELS) {
-          startIdx = Math.max(0, Math.min(modelIndex - 2, filtered.length - MAX_MODELS));
+          startIdx = Math.max(0, Math.min(modelIndex - 3, filtered.length - MAX_MODELS));
         }
         const visibleModels = filtered.slice(startIdx, startIdx + MAX_MODELS);
         if (filtered.length > MAX_MODELS) {
@@ -255,19 +275,15 @@ export async function interactiveChatCommand(options?: { model?: string }) {
           const isCurrent = m.id === currentBackendModel;
           const prefix = isCurrent ? "● " : "  ";
           const left = prefix + m.name;
-          const tag = m.tag || (m.isFree ? "Free" : "BYOK");
-          const spaces = Math.max(2, width - left.length - tag.length);
-          const row = left + " ".repeat(spaces) + tag;
+          const spaces = Math.max(0, width - left.length);
+          const row = left + " ".repeat(spaces);
           if (idx === modelIndex) {
             lines.push(peachBg(row));
-            if (m.description) lines.push(chalk.dim(`    ${m.description}`));
           } else {
             lines.push(chalk.white(row));
           }
         });
       }
-      lines.push("");
-      lines.push(chalk.dim("Type /connect to link API keys (OpenAI, Anthropic, Gemini, DeepSeek, Groq)."));
     } else if (mode === "connect_modal") {
       const header = "Connect Provider (BYOK)" + " ".repeat(Math.max(2, width - 24)) + chalk.dim("esc");
       lines.push(chalk.bold.white(header));
@@ -335,7 +351,7 @@ export async function interactiveChatCommand(options?: { model?: string }) {
           visible.forEach((c, relIdx) => {
             const absIdx = startIdx + relIdx;
             const isSelected = absIdx === menuIndex;
-            const row = "  " + c.name.padEnd(12) + c.desc;
+            const row = "  " + c.name.padEnd(15) + c.desc;
             const padded = row + " ".repeat(Math.max(2, width - row.length));
             lines.push(isSelected ? peachBg(padded) : chalk.white(row));
           });
@@ -343,17 +359,36 @@ export async function interactiveChatCommand(options?: { model?: string }) {
       }
 
       const friendlyAgent = currentAgent === "build" ? "Build" : "Plan";
+      const bar = chalk.hex(OCEAN_BLUE)("│");
+      lines.push(bar);
       if (isProcessing) {
         const frameIdx = renderer.getThinkingFrame() % THINKING_FRAMES.length;
         const thinkingText = THINKING_FRAMES[frameIdx].trim();
-        lines.push(`${bar} ${thinkingText}`);
+        lines.push(`${bar} ${chalk.dim(thinkingText)}`);
       } else {
-        lines.push(`${bar} ${input}█`);
+        lines.push(`${bar} ${input}`);
       }
-      lines.push(`${bar}`);
+      lines.push(bar);
       lines.push(
-        `  ${chalk.hex(OCEAN_BLUE).bold(friendlyAgent)} ${chalk.dim("·")} ${chalk.white(friendlyModel)} ${chalk.dim("· OceanCode")}`
+        `${bar} ${chalk.hex(OCEAN_BLUE).bold(friendlyAgent)} ${chalk.dim("·")} ${chalk.white(friendlyModel)} ${chalk.dim("OceanCode")}`
       );
+
+      // Status bar line at the very bottom
+      const normCwd = process.cwd().replace(/\\/g, "/");
+      const leftStatus = chalk.dim(normCwd);
+      const midStatus = `${chalk.bold.white("ctrl+p")} ${chalk.dim("commands")}`;
+      const rightStatus = `${chalk.green("●")} ${chalk.cyan("OceanCode 0.1.2")}`;
+
+      const termWidth = process.stdout.columns || 80;
+      const plainLeft = normCwd;
+      const plainMid = "ctrl+p commands";
+      const plainRight = "● OceanCode 0.1.2";
+      const totalLen = plainLeft.length + plainMid.length + plainRight.length;
+      const availableSpace = Math.max(2, termWidth - totalLen - 2);
+      const padLeft = " ".repeat(Math.max(2, Math.floor(availableSpace / 2)));
+      const padRight = " ".repeat(Math.max(2, availableSpace - padLeft.length));
+
+      lines.push(`${leftStatus}${padLeft}${midStatus}${padRight}${rightStatus}`);
     }
 
     return lines;
@@ -365,6 +400,7 @@ export async function interactiveChatCommand(options?: { model?: string }) {
   const paintBar = () => {
     try {
       if (!process.stdout.isTTY) return;
+      process.stdout.write("\x1b]0;oceancode\x07");
       const lines = buildBarLines();
       const { rows, barStartRow, scrollBottom } = getBarMetrics(lines.length);
 
@@ -394,18 +430,15 @@ export async function interactiveChatCommand(options?: { model?: string }) {
       // Place cursor appropriately
       if (!isProcessing && mode === "normal") {
         process.stdout.write("\x1b[?25h");
-        // In normal mode, the input line is always 3 rows from the bottom of the bar (Math.max(0, lines.length - 3))
-        const inputLineIdx = Math.max(0, lines.length - 3);
-        const targetRow = barStartRow + inputLineIdx;
-        const col = Math.min(process.stdout.columns || 80, 3 + input.length);
+        const targetRow = barStartRow + 1;
+        const col = Math.min(process.stdout.columns || 80, 3 + cursorIndex);
         process.stdout.write(`\x1b[${targetRow};${col}H`);
       } else if (!isProcessing && mode === "model_selector") {
         process.stdout.write("\x1b[?25h");
         const col = Math.min(process.stdout.columns || 80, 9 + modelSearch.length);
         process.stdout.write(`\x1b[${barStartRow + 1};${col}H`);
       } else {
-        process.stdout.write("\x1b[?25l");
-        process.stdout.write(`\x1b[${contentRow};1H`);
+        process.stdout.write("\x1b[?25l\x1b8");
       }
     } catch {
       // Safe fallback: never crash terminal loop
@@ -454,19 +487,7 @@ export async function interactiveChatCommand(options?: { model?: string }) {
         }
       } else if (part.type === "tool") {
         const toolName = part.tool || "tool";
-        const inputObj = part.state?.input || {};
-        const detail =
-          inputObj.filePath ||
-          inputObj.command ||
-          inputObj.pattern ||
-          inputObj.query ||
-          inputObj.url ||
-          inputObj.name ||
-          part.state?.title ||
-          part.call?.command ||
-          part.call?.path ||
-          part.call?.description ||
-          "";
+        const detail = extractToolDetail(part);
         const status = part.state?.status || part.status || "";
         renderer.handleTool(toolName, detail, part.id, status);
       } else if (part.type === "text" && typeof part.text === "string") {
@@ -571,7 +592,7 @@ export async function interactiveChatCommand(options?: { model?: string }) {
         if (str === "d" || str === "D") {
           const prov = SUPPORTED_BYOK_PROVIDERS[connectProviderIndex];
           removeProviderKey(prov.id);
-          console.log(chalk.yellow(`\n✓ Disconnected API key for ${prov.name}.\n`));
+          printToContent(chalk.yellow(`\n✓ Disconnected API key for ${prov.name}.\n`));
           render();
           return;
         }
@@ -606,7 +627,7 @@ export async function interactiveChatCommand(options?: { model?: string }) {
             connectStep = "provider_list";
             connectKeyInput = "";
             connectErrorMsg = "";
-            console.log(
+            printToContent(
               chalk.green(
                 `\n✓ Successfully verified and connected ${prov.name}! Its models are now unlocked in /models.\n`
               )
@@ -637,8 +658,8 @@ export async function interactiveChatCommand(options?: { model?: string }) {
         (m) =>
           m.name.toLowerCase().includes(searchLower) ||
           m.id.toLowerCase().includes(searchLower) ||
-          m.tag.toLowerCase().includes(searchLower) ||
-          m.description.toLowerCase().includes(searchLower)
+          (m.tag ? m.tag.toLowerCase().includes(searchLower) : false) ||
+          (m.description ? m.description.toLowerCase().includes(searchLower) : false)
       );
 
       if (key.name === "escape") {
@@ -711,26 +732,51 @@ export async function interactiveChatCommand(options?: { model?: string }) {
       return;
     }
 
-    if (matching.length > 0) {
-      if (key.name === "up") {
+    if (key.name === "up") {
+      if (matching.length > 0) {
         menuIndex = (menuIndex - 1 + matching.length) % matching.length;
         render();
         return;
+      } else if (promptHistory.length > 0) {
+        if (historyIndex === -1) {
+          tempSavedInput = input;
+          historyIndex = promptHistory.length - 1;
+        } else if (historyIndex > 0) {
+          historyIndex--;
+        }
+        input = promptHistory[historyIndex] || "";
+        cursorIndex = input.length;
+        render();
+        return;
       }
+    }
 
-      if (key.name === "down") {
+    if (key.name === "down") {
+      if (matching.length > 0) {
         menuIndex = (menuIndex + 1) % matching.length;
         render();
         return;
-      }
-
-      if (key.name === "tab") {
-        if (matching[menuIndex]) {
-          input = matching[menuIndex].name;
+      } else if (historyIndex !== -1) {
+        if (historyIndex < promptHistory.length - 1) {
+          historyIndex++;
+          input = promptHistory[historyIndex] || "";
+        } else {
+          historyIndex = -1;
+          input = tempSavedInput;
         }
+        cursorIndex = input.length;
         render();
         return;
       }
+    }
+
+    if (key.name === "tab") {
+      if (matching.length > 0 && matching[menuIndex]) {
+        input = matching[menuIndex].name;
+        cursorIndex = input.length;
+      }
+      render();
+      return;
     }
 
     if (key.name === "return") {
@@ -740,11 +786,17 @@ export async function interactiveChatCommand(options?: { model?: string }) {
       }
 
       input = "";
+      cursorIndex = 0;
+      historyIndex = -1;
       menuIndex = 0;
 
       if (!submitted) {
         paintBar();
         return;
+      }
+
+      if (promptHistory[promptHistory.length - 1] !== submitted) {
+        promptHistory.push(submitted);
       }
 
       // Handle Slash Commands
@@ -763,7 +815,7 @@ export async function interactiveChatCommand(options?: { model?: string }) {
           process.stdout.write("\x1b[1;1H");
         }
         renderTopBar(getFriendlyModelName(currentBackendModel));
-        contentRow = 8;
+        process.stdout.write("\x1b7");
         lastBarStartRow = 0;
         paintBar();
         return;
@@ -871,6 +923,22 @@ export async function interactiveChatCommand(options?: { model?: string }) {
           render();
           return;
         }
+      }
+
+      if (submitted === "/logout" || submitted.startsWith("/logout") || submitted === "/disconnect" || submitted.startsWith("/disconnect")) {
+        const parts = submitted.split(" ").filter(Boolean);
+        const provArg = parts[1]?.toLowerCase();
+        if (provArg && provArg !== "all") {
+          removeProviderKey(provArg);
+          printToContent(chalk.green(`✔ Disconnected API key for ${provArg}.`));
+        } else {
+          for (const p of SUPPORTED_BYOK_PROVIDERS) {
+            removeProviderKey(p.id);
+          }
+          printToContent(chalk.green("✔ Disconnected all provider API keys."));
+        }
+        render();
+        return;
       }
 
       // /mcp: Lists and configures Model Context Protocol servers
@@ -1010,10 +1078,398 @@ export async function interactiveChatCommand(options?: { model?: string }) {
         }
       }
 
+      // Direct shell command execution: !<cmd> or /exec <cmd>
+      if (submitted.startsWith("!") || submitted.startsWith("/exec")) {
+        const cmdToRun = submitted.startsWith("!")
+          ? submitted.slice(1).trim()
+          : submitted.replace(/^\/exec\s*/, "").trim();
+
+        if (!cmdToRun) {
+          printToContent(chalk.yellow("Usage: !<command> or /exec <command>\nExample: !git status"));
+          render();
+          return;
+        }
+
+        printToContent(chalk.cyan(`$ ${cmdToRun}`));
+        try {
+          const res = execSync(cmdToRun, {
+            cwd: session.directory,
+            encoding: "utf-8",
+            stdio: ["ignore", "pipe", "pipe"],
+            timeout: 60000,
+            maxBuffer: 10 * 1024 * 1024,
+          });
+          if (res.trim()) {
+            printToContent(res.trimEnd());
+          } else {
+            printToContent(chalk.dim("(Command completed with no output)"));
+          }
+        } catch (err: any) {
+          const out = err.stdout ? String(err.stdout).trim() : "";
+          const errOut = err.stderr ? String(err.stderr).trim() : "";
+          if (out) printToContent(out);
+          if (errOut) printToContent(chalk.red(errOut));
+          if (!out && !errOut) printToContent(chalk.red(`Command failed: ${err.message}`));
+        }
+        render();
+        return;
+      }
+
+      // /checkpoint: snapshot workspace changes to git stash
+      if (submitted === "/checkpoint") {
+        try {
+          const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+          const stashMsg = `oceancode-checkpoint-${timestamp}`;
+          const res = execSync(`git stash push -m "${stashMsg}" --include-untracked`, {
+            cwd: session.directory,
+            encoding: "utf-8",
+            stdio: ["ignore", "pipe", "pipe"],
+          });
+          if (res.includes("No local changes to save")) {
+            printToContent(chalk.yellow("No unstaged or modified changes to checkpoint."));
+          } else {
+            try {
+              execSync("git stash apply stash@{0}", {
+                cwd: session.directory,
+                stdio: ["ignore", "pipe", "pipe"],
+              });
+            } catch {}
+            printToContent(
+              `${chalk.green(`✔ Checkpoint created: ${stashMsg}`)}\n` +
+                chalk.dim("  Current changes safely recorded in git stash.\n  Revert anytime with: git stash apply")
+            );
+          }
+        } catch (err: any) {
+          printToContent(chalk.red(`Checkpoint failed: ${err.message}`));
+        }
+        render();
+        return;
+      }
+
+      // /diff-file: inspect git diff for a specific file
+      if (submitted.startsWith("/diff-file")) {
+        const targetFile = submitted.replace(/^\/diff-file\s*/, "").trim();
+        if (!targetFile) {
+          printToContent(chalk.yellow("Usage: /diff-file <filepath>\nExample: /diff-file package.json"));
+          render();
+          return;
+        }
+        try {
+          const res = execSync(`git diff HEAD -- "${targetFile}"`, {
+            cwd: session.directory,
+            encoding: "utf-8",
+            stdio: ["ignore", "pipe", "pipe"],
+          });
+          if (!res.trim()) {
+            printToContent(chalk.dim(`No differences found for "${targetFile}" compared to HEAD.`));
+          } else {
+            const colored = res
+              .split("\n")
+              .map((line) => {
+                if (line.startsWith("+") && !line.startsWith("+++")) return chalk.green(line);
+                if (line.startsWith("-") && !line.startsWith("---")) return chalk.red(line);
+                if (line.startsWith("@@")) return chalk.cyan(line);
+                return chalk.dim(line);
+              })
+              .join("\n");
+            printToContent(`${chalk.bold(`Diff: ${targetFile}`)}\n${colored}`);
+          }
+        } catch (err: any) {
+          printToContent(chalk.red(`Failed to get diff for ${targetFile}: ${err.message}`));
+        }
+        render();
+        return;
+      }
+
+      // /commit: commit staged changes or generate conventional commit message
+      if (submitted === "/commit" || submitted.startsWith("/commit ")) {
+        const manualMsg = submitted.replace(/^\/commit\s*/, "").trim();
+        if (manualMsg) {
+          try {
+            execSync(`git commit -m "${manualMsg.replace(/"/g, '\\"')}"`, {
+              cwd: session.directory,
+              encoding: "utf-8",
+              stdio: ["ignore", "pipe", "pipe"],
+            });
+            printToContent(chalk.green(`✔ Committed successfully with message: "${manualMsg}"`));
+          } catch (err: any) {
+            printToContent(chalk.red(`Git commit failed: ${err.message}`));
+          }
+          render();
+          return;
+        } else {
+          try {
+            const staged = execSync("git diff --staged", {
+              cwd: session.directory,
+              encoding: "utf-8",
+              stdio: ["ignore", "pipe", "pipe"],
+            });
+            const unstaged = execSync("git diff", {
+              cwd: session.directory,
+              encoding: "utf-8",
+              stdio: ["ignore", "pipe", "pipe"],
+            });
+            const status = execSync("git status --short", {
+              cwd: session.directory,
+              encoding: "utf-8",
+              stdio: ["ignore", "pipe", "pipe"],
+            });
+
+            if (!status.trim()) {
+              printToContent(chalk.yellow("No changes detected to commit. Working tree is clean."));
+              render();
+              return;
+            }
+
+            const diffToUse = staged.trim() || unstaged.trim() || status;
+            submitted = `[GENERATE CONVENTIONAL COMMIT MESSAGE]\nBased on the following git changes, generate a concise, conventional commit message (e.g. feat:, fix:, refactor:, chore:) with a 1-sentence explanation:\n\n\`\`\`diff\n${diffToUse.slice(0, 4000)}\n\`\`\`\n\nPlease format the commit message clearly so it can be copied or committed.`;
+            // Falls through to regular prompt submission
+          } catch (err: any) {
+            printToContent(chalk.red(`Git inspection failed: ${err.message}`));
+            render();
+            return;
+          }
+        }
+      }
+
+      // /review: review current git diff or target branch
+      if (submitted === "/review" || submitted.startsWith("/review ")) {
+        const target = submitted.replace(/^\/review\s*/, "").trim() || "HEAD";
+        try {
+          let diff = "";
+          try {
+            diff = execSync(`git diff ${target}`, {
+              cwd: session.directory,
+              encoding: "utf-8",
+              stdio: ["ignore", "pipe", "pipe"],
+            });
+          } catch {
+            diff = execSync("git diff", {
+              cwd: session.directory,
+              encoding: "utf-8",
+              stdio: ["ignore", "pipe", "pipe"],
+            });
+          }
+
+          if (!diff.trim()) {
+            printToContent(chalk.yellow("No git changes found to review. Working directory matches target."));
+            render();
+            return;
+          }
+
+          submitted = `[CODE REVIEW REQUEST]\nPlease review the following diff carefully.\nIdentify: 1) Potential bugs or regressions, 2) Security issues, 3) Edge case handling, 4) Code style or architectural improvements:\n\n\`\`\`diff\n${diff.slice(0, 6000)}\n\`\`\``;
+          // Falls through to regular prompt submission
+        } catch (err: any) {
+          printToContent(chalk.red(`Review failed: ${err.message}`));
+          render();
+          return;
+        }
+      }
+
+      // /open: open file in default system editor
+      if (submitted.startsWith("/open")) {
+        const fileToOpen = submitted.replace(/^\/open\s*/, "").trim();
+        if (!fileToOpen) {
+          printToContent(chalk.yellow("Usage: /open <filepath>\nExample: /open src/index.ts"));
+          render();
+          return;
+        }
+        const resolved = path.resolve(session.directory, fileToOpen);
+        if (!fs.existsSync(resolved)) {
+          printToContent(chalk.red(`File not found: ${fileToOpen}`));
+          render();
+          return;
+        }
+
+        const openCmd =
+          process.platform === "win32"
+            ? `start "" "${resolved}"`
+            : process.platform === "darwin"
+            ? `open "${resolved}"`
+            : `xdg-open "${resolved}"`;
+
+        try {
+          execSync(openCmd, {
+            shell: process.platform === "win32" ? "cmd.exe" : "/bin/sh",
+            stdio: "ignore",
+          });
+          printToContent(chalk.green(`✔ Opened ${fileToOpen}`));
+        } catch (err: any) {
+          printToContent(chalk.red(`Failed to open file: ${err.message}`));
+        }
+        render();
+        return;
+      }
+
+      // /add: pin file into model context memory
+      if (submitted.startsWith("/add")) {
+        const targetPath = submitted.replace(/^\/add\s*/, "").trim();
+        if (!targetPath) {
+          printToContent(chalk.yellow("Usage: /add <filepath>\nExample: /add src/server/client.ts"));
+          render();
+          return;
+        }
+        const resolved = path.resolve(session.directory, targetPath);
+        if (!fs.existsSync(resolved)) {
+          printToContent(chalk.red(`File does not exist: ${targetPath}`));
+          render();
+          return;
+        }
+        try {
+          const stats = fs.statSync(resolved);
+          if (stats.isDirectory()) {
+            printToContent(chalk.yellow(`Cannot add directory directly. Specify a file path: /add ${targetPath}/<filename>`));
+            render();
+            return;
+          }
+          const content = fs.readFileSync(resolved, "utf-8");
+          pinnedContext.set(targetPath, content);
+          printToContent(chalk.green(`✔ Added "${targetPath}" (${content.length} chars) to active context.`));
+        } catch (err: any) {
+          printToContent(chalk.red(`Failed to read file: ${err.message}`));
+        }
+        render();
+        return;
+      }
+
+      // /drop: remove pinned file from context
+      if (submitted.startsWith("/drop")) {
+        const targetPath = submitted.replace(/^\/drop\s*/, "").trim();
+        if (!targetPath) {
+          printToContent(chalk.yellow("Usage: /drop <filepath> or /drop all"));
+          render();
+          return;
+        }
+        if (targetPath.toLowerCase() === "all") {
+          const count = pinnedContext.size;
+          pinnedContext.clear();
+          printToContent(chalk.green(`✔ Dropped all ${count} pinned item(s) from session context.`));
+        } else if (pinnedContext.has(targetPath)) {
+          pinnedContext.delete(targetPath);
+          printToContent(chalk.green(`✔ Dropped "${targetPath}" from session context.`));
+        } else {
+          let matched = false;
+          for (const key of pinnedContext.keys()) {
+            if (key.includes(targetPath)) {
+              pinnedContext.delete(key);
+              printToContent(chalk.green(`✔ Dropped "${key}" from session context.`));
+              matched = true;
+              break;
+            }
+          }
+          if (!matched) {
+            printToContent(chalk.yellow(`"${targetPath}" was not found in pinned context.`));
+          }
+        }
+        render();
+        return;
+      }
+
+      // /context: inspect pinned files and loaded memory
+      if (submitted === "/context") {
+        const lines: string[] = [];
+        lines.push(chalk.bold("Active Session Context:"));
+        lines.push(`  • Model: ${chalk.cyan(getFriendlyModelName(currentBackendModel))}`);
+        lines.push(`  • Agent Mode: ${chalk.cyan(currentAgent.toUpperCase())}`);
+        lines.push(`  • Working Directory: ${chalk.dim(session.directory)}`);
+
+        if (pinnedContext.size === 0) {
+          lines.push(chalk.dim("  • Pinned Files: None (use /add <file> to attach context)"));
+        } else {
+          lines.push(chalk.bold(`  • Pinned Files (${pinnedContext.size}):`));
+          for (const [p, content] of pinnedContext.entries()) {
+            lines.push(`    - ${chalk.cyan(p)} ${chalk.dim(`(${content.length} chars)`)}`);
+          }
+        }
+        printToContent(lines.join("\n"));
+        render();
+        return;
+      }
+
+      // /web: fetch web page content and inject into context
+      if (submitted.startsWith("/web")) {
+        const targetUrl = submitted.replace(/^\/web\s*/, "").trim();
+        if (!targetUrl || (!targetUrl.startsWith("http://") && !targetUrl.startsWith("https://"))) {
+          printToContent(chalk.yellow("Usage: /web <url>\nExample: /web https://docs.github.com/en/rest"));
+          render();
+          return;
+        }
+        printToContent(chalk.cyan(`Fetching ${targetUrl}...`));
+        try {
+          const res = await fetch(targetUrl, { headers: { "User-Agent": "OceanCode-CLI" } });
+          if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+          const html = await res.text();
+          const textOnly = html
+            .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "")
+            .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, "")
+            .replace(/<[^>]+>/g, " ")
+            .replace(/\s+/g, " ")
+            .trim();
+
+          const snippet = textOnly.slice(0, 10000);
+          pinnedContext.set(targetUrl, snippet);
+          printToContent(chalk.green(`✔ Fetched and pinned text from ${targetUrl} (${snippet.length} chars).`));
+        } catch (err: any) {
+          printToContent(chalk.red(`Failed to fetch URL: ${err.message}`));
+        }
+        render();
+        return;
+      }
+
+      // /export: export conversation transcript to Markdown
+      if (submitted === "/export" || submitted.startsWith("/export ")) {
+        const filenameArg = submitted.replace(/^\/export\s*/, "").trim();
+        const exportPath = filenameArg || `oceancode-session-${session.id.slice(0, 8)}.md`;
+        const resolvedExport = path.resolve(session.directory, exportPath);
+
+        try {
+          printToContent(chalk.cyan("Exporting session history..."));
+          const rawMsgs = await client.getSessionMessages(session.id);
+          const mdLines: string[] = [
+            "# OceanCode Session Export",
+            `**Session ID:** \`${session.id}\``,
+            `**Date:** ${new Date().toLocaleString()}`,
+            `**Model:** ${getFriendlyModelName(currentBackendModel)}`,
+            `**Directory:** \`${session.directory}\``,
+            "\n---\n",
+          ];
+
+          if (Array.isArray(rawMsgs) && rawMsgs.length > 0) {
+            for (const msg of rawMsgs) {
+              const role = msg.role || msg.type || "message";
+              let content = "";
+              if (typeof msg.content === "string") {
+                content = msg.content;
+              } else if (Array.isArray(msg.parts)) {
+                content = msg.parts
+                  .map((p: any) => (typeof p === "string" ? p : p.text || JSON.stringify(p)))
+                  .join("\n");
+              } else {
+                content = JSON.stringify(msg);
+              }
+              mdLines.push(`### ${role.toUpperCase()}\n\n${content}\n`);
+            }
+          } else if (conversationHistory.length > 0) {
+            for (const turn of conversationHistory) {
+              mdLines.push(`### ${turn.role.toUpperCase()}\n\n${turn.text}\n`);
+            }
+          } else {
+            mdLines.push("_No session messages recorded yet._");
+          }
+
+          fs.writeFileSync(resolvedExport, mdLines.join("\n"), "utf-8");
+          printToContent(`${chalk.green(`✔ Session successfully exported to:`)}\n  ${resolvedExport}`);
+        } catch (err: any) {
+          printToContent(chalk.red(`Failed to export session: ${err.message}`));
+        }
+        render();
+        return;
+      }
+
       if (submitted === "/help") {
         const helpLines = [
           chalk.bold("Available Commands:"),
-          ...COMMANDS.map((c) => `  ${chalk.hex(OCEAN_BLUE).bold(c.name.padEnd(12))} ${chalk.dim(c.desc)}`),
+          ...COMMANDS.map((c) => `  ${chalk.hex(OCEAN_BLUE).bold(c.name.padEnd(15))} ${chalk.dim(c.desc)}`),
         ].join("\n");
         printToContent(helpLines);
         render();
@@ -1030,10 +1486,9 @@ export async function interactiveChatCommand(options?: { model?: string }) {
 
       // Regular prompt submission
       const friendlyName = getFriendlyModelName(currentBackendModel);
-      process.stdout.write(`\x1b[${contentRow};1H`);
+      process.stdout.write("\x1b8");
       renderUserMessageCard(submitted, friendlyName);
-      const promptLines = submitted.split("\n").length;
-      contentRow = Math.min(currentScrollBottom || 20, contentRow + promptLines);
+      process.stdout.write("\x1b7");
 
       isProcessing = true;
       userMsgId = null;
@@ -1043,8 +1498,18 @@ export async function interactiveChatCommand(options?: { model?: string }) {
       resetActivityTimeout();
       renderer.start(friendlyName);
 
+      let promptToSend = submitted;
+      if (pinnedContext.size > 0) {
+        const parts: string[] = ["--- PINNED CONTEXT FILES ---"];
+        for (const [k, v] of pinnedContext.entries()) {
+          parts.push(`\n[Reference: ${k}]\n${v}`);
+        }
+        parts.push("--- END PINNED CONTEXT ---\n");
+        promptToSend = parts.join("\n") + "\n" + submitted;
+      }
+
       client
-        .promptSession(session.id, submitted, {
+        .promptSession(session.id, promptToSend, {
           model: currentBackendModel,
           agent: currentAgent,
           directory: session.directory,
@@ -1060,31 +1525,80 @@ export async function interactiveChatCommand(options?: { model?: string }) {
       return;
     }
 
-    if (key.name === "backspace") {
-      input = input.slice(0, -1);
-      menuIndex = 0;
+    if (key.name === "left") {
+      cursorIndex = Math.max(0, cursorIndex - 1);
       render();
       return;
     }
 
-    if (str && str.length === 1 && !key.ctrl && !key.meta) {
-      input += str;
-      menuIndex = 0;
+    if (key.name === "right") {
+      cursorIndex = Math.min(input.length, cursorIndex + 1);
       render();
       return;
+    }
+
+    if (key.name === "home") {
+      cursorIndex = 0;
+      render();
+      return;
+    }
+
+    if (key.name === "end") {
+      cursorIndex = input.length;
+      render();
+      return;
+    }
+
+    if (key.name === "delete") {
+      if (cursorIndex < input.length) {
+        input = input.slice(0, cursorIndex) + input.slice(cursorIndex + 1);
+        menuIndex = 0;
+        render();
+      }
+      return;
+    }
+
+    if (key.name === "backspace") {
+      if (cursorIndex > 0) {
+        input = input.slice(0, cursorIndex - 1) + input.slice(cursorIndex);
+        cursorIndex--;
+        menuIndex = 0;
+        render();
+      }
+      return;
+    }
+
+    if (str && !key.ctrl && !key.meta) {
+      // Discard escape sequences, mouse tracking fragments (e.g. <0;23;45M) and clutter
+      if (str.startsWith("\x1b") || /^<[0-9;]+[Mm]$/.test(str)) {
+        return;
+      }
+      const clean = str.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "").replace(/[\r\n]+/g, " ");
+      if (clean) {
+        input = input.slice(0, cursorIndex) + clean + input.slice(cursorIndex);
+        cursorIndex += clean.length;
+        menuIndex = 0;
+        historyIndex = -1;
+        render();
+        return;
+      }
     }
   };
 
   process.stdin.on("keypress", onKeypress);
 
-  // ── Startup: clear screen, clear scrollback buffer, set scroll region, draw header + glued bar ─────
+  // ── Startup: clear screen, disable mouse tracking, set scroll region, draw header + glued bar ─────
+  process.title = "oceancode";
   if (process.stdout.isTTY) {
+    process.stdout.write("\x1b]0;oceancode\x07");
+    process.stdout.write("\x1b]2;oceancode\x07");
     process.stdout.write("\x1b[2J\x1b[3J\x1b[H"); // clear full screen, scrollback history & move cursor to top-left
+    process.stdout.write("\x1b[?1000l\x1b[?1002l\x1b[?1006l"); // disable mouse reporting escape codes so clicks don't inject numbers
     const { scrollBottom } = getBarMetrics(3);
     applyScrollRegion(scrollBottom);
     process.stdout.write("\x1b[1;1H");
     renderTopBar(getFriendlyModelName(currentBackendModel));
-    contentRow = 8;
+    process.stdout.write("\x1b7");
     paintBar();
   }
 }

@@ -102,9 +102,9 @@ ${testCommands.length > 0 ? testCommands.join("\n") : "- Standard unit tests"}
    - When updating existing files, always use \`edit\` with exact matching lines rather than overwriting the entire file with \`write\`.
 4. **Verification**:
    - After completing edits, run available verification scripts or tests via \`bash\` to ensure syntax, compilation, and tests succeed.
-5. **Readable, Structured Formatting (No Walls of Text)**:
+5. **Readable, Structured Formatting (No Walls of Text, No Tables)**:
    - Never output dense, unbroken walls of text.
-   - Always format explanations with markdown tables, clear bullet points with contextual emojis (📁, 🔧, 💡, ⚡, 🚀, ⚠️, ✅, 📌, 🎯), numbered steps, bold keywords, and fenced code blocks.
+   - Never output markdown tables. Always format explanations with clean, readable bullet points with contextual emojis (📁, 🔧, 💡, ⚡, 🚀, ⚠️, ✅, 📌, 🎯), numbered steps, bold keywords, and fenced code blocks.
 `;
 
   fs.writeFileSync(agentsPath, agentsContent, "utf-8");

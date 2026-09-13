@@ -111,3 +111,38 @@ export function getFriendlyToolLabel(rawName: string): ToolLabel {
     .replace(/\b\w/g, (c) => c.toUpperCase());
   return { icon: "🔧", label: clean };
 }
+
+export function extractToolDetail(part: any): string {
+  let input: any = part?.state?.input ?? part?.input ?? part?.args ?? part?.call?.input ?? part?.call?.args;
+  if (typeof input === "string" && input.trim().startsWith("{")) {
+    try {
+      input = JSON.parse(input);
+    } catch {}
+  }
+
+  if (typeof input === "string" && input.trim()) {
+    return input.trim();
+  }
+
+  if (input && typeof input === "object") {
+    const candidate =
+      input.filePath ||
+      input.path ||
+      input.file ||
+      input.command ||
+      input.pattern ||
+      input.query ||
+      input.url ||
+      input.name ||
+      input.directory ||
+      input.dir ||
+      input.description ||
+      (Object.values(input)[0] !== undefined ? String(Object.values(input)[0]) : "");
+    if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+  }
+
+  if (typeof part?.state?.title === "string" && part.state.title.trim()) return part.state.title.trim();
+  if (typeof part?.call?.path === "string" && part.call.path.trim()) return part.call.path.trim();
+  if (typeof part?.call?.command === "string" && part.call.command.trim()) return part.call.command.trim();
+  return "";
+}

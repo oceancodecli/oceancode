@@ -1,13 +1,21 @@
 {
   "name": "oceancode",
-  "version": "0.1.1",
-  "description": "Next-generation CLI coding assistant powered by OpenCode server",
+  "version": "0.1.2",
+  "description": "Next-generation CLI coding assistant with free models, BYOK, MCP ecosystem, and autonomous agent loops",
   "main": "dist/index.js",
   "bin": {
     "oceancode": "dist/index.js",
     "ocean": "dist/index.js"
   },
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/oceancodecli/oceancode.git"
+  },
+  "homepage": "https://github.com/oceancodecli/oceancode#readme",
+  "bugs": {
+    "url": "https://github.com/oceancodecli/oceancode/issues"
+  },
   "files": [
     "dist",
     "scripts/postinstall.mjs",
@@ -21,17 +29,28 @@
     "build": "tsup",
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
+    "prepare": "npm run build",
     "postinstall": "node ./scripts/postinstall.mjs",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
     "ai",
     "cli",
+    "terminal",
     "coding-assistant",
+    "developer-tools",
     "opencode",
-    "oceancode"
+    "oceancode",
+    "mcp",
+    "model-context-protocol",
+    "byok",
+    "autonomous-agent",
+    "deepseek",
+    "anthropic",
+    "openai",
+    "gemini"
   ],
-  "author": "",
+  "author": "Veloxx Labs <https://github.com/Veloxx-Labs>",
   "license": "MIT",
   "dependencies": {
     "@inquirer/prompts": "^7.3.2",
