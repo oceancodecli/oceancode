@@ -1,0 +1,13 @@
+pkgbase = oceancode
+	pkgdesc = Next-generation CLI coding assistant
+	pkgver = 0.1.2
+	pkgrel = 1
+	url = https://github.com/oceancodecli/oceancode
+	arch = any
+	license = MIT
+	makedepends = npm
+	depends = nodejs>=18
+	source = https://registry.npmjs.org/oceancode/-/oceancode-0.1.2.tgz
+	sha256sums = 11fee68bfb11fdff035d19a6dc0a345cad12649063de189bb649bde6d6a92424
+
+pkgname = oceancode
