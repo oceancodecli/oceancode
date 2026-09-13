@@ -1,0 +1,17 @@
+pkgname=oceancode
+pkgver=0.1.2
+pkgrel=1
+pkgdesc="Next-generation CLI coding assistant"
+arch=('any')
+url="https://github.com/oceancodecli/oceancode"
+license=('MIT')
+depends=('nodejs>=18')
+makedepends=('npm')
+source=("https://registry.npmjs.org/${pkgname}/-/${pkgname}-${pkgver}.tgz")
+sha256sums=('11fee68bfb11fdff035d19a6dc0a345cad12649063de189bb649bde6d6a92424')
+
+package() {
+  npm install -g --prefix "${pkgdir}/usr" "${srcdir}/${pkgname}-${pkgver}.tgz"
+  find "${pkgdir}/usr" -name package.json -exec sed -i "s|${pkgdir}||g" {} +
+  chown -R root:root "${pkgdir}"
+}

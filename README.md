@@ -49,13 +49,45 @@ Whether you run quick one-shot refactors or work inside a persistent split-scree
 
 ### Prerequisites
 
-- Node.js 18.0.0 or higher
-- npm, pnpm, or yarn
+- Node.js 18.0.0 or higher (or Bun)
+- Any supported package manager: npm, pnpm, yarn, bun, brew, or paru
 
-### Global Installation
+### Installation Methods
+
+#### Quick Install (curl)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/oceancodecli/oceancode/main/install.sh | bash
+```
+
+#### Bun
+
+```bash
+bun add -g oceancode
+# or run directly without global installation:
+bunx oceancode
+```
+
+#### Homebrew (macOS / Linux)
+
+```bash
+brew install oceancodecli/tap/oceancode
+```
+
+#### Arch Linux (paru / AUR)
+
+```bash
+paru -S oceancode
+```
+
+#### npm / pnpm / yarn
 
 ```bash
 npm install -g oceancode
+# or
+pnpm add -g oceancode
+# or
+yarn global add oceancode
 ```
 
 This installs both the primary `oceancode` command and its convenient short alias `ocean`. The OpenCode backend binary is bundled and orchestrated automatically on first launch.
